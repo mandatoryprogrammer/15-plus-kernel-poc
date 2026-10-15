@@ -1,0 +1,35 @@
+#!/bin/bash
+pattern='*'
+declare -a roots
+while (( $# )); do
+  if [[ $1 == -name ]]; then
+    shift
+    (( $# )) || { echo "find: -name requires a pattern" >&2; exit 64; }
+    pattern=$1
+  elif [[ $1 == -* ]]; then
+    echo "find: supported expression is -name PATTERN" >&2
+    exit 64
+  else
+    roots[${#roots[@]}]=$1
+  fi
+  shift
+done
+((${#roots[@]})) || roots=(.)
+shopt -s nullglob dotglob
+
+walk() {
+  local value=$1 child
+  local -a children
+  if [[ ${value##*/} == $pattern ]]; then printf '%s\n' "$value"; fi
+  if [[ -d $value && ! -L $value ]]; then
+    children=( "$value"/* )
+    for child in "${children[@]}"; do walk "$child"; done
+  fi
+}
+
+status=0
+for root in "${roots[@]}"; do
+  if [[ ! -e $root && ! -L $root ]]; then echo "find: $root: No such file or directory" >&2; status=1; continue; fi
+  walk "$root"
+done
+exit "$status"

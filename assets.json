@@ -1,0 +1,212 @@
+[
+  {
+    "role": "ibec",
+    "url": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/089-67892/3BBFFF30-FCEB-42EC-B961-E7503AA79675/iPhone15,5_26.3_23D127_Restore.ipsw",
+    "member": "Firmware/dfu/iBEC.d38.RELEASE.im4p",
+    "archive_size": 10143723378,
+    "sha256": "7d53d03673301cdf6117e55c292c009b55bb3c850f419fd1558a898ea5bc3794",
+    "size": 1201621,
+    "recipe": "Extract the exact ZIP member; verify SHA-256 before transformation.",
+    "compatibility": "iPhone15,5 / d38ap / iOS 26.3 / 23D127"
+  },
+  {
+    "role": "kernel",
+    "url": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/089-67892/3BBFFF30-FCEB-42EC-B961-E7503AA79675/iPhone15,5_26.3_23D127_Restore.ipsw",
+    "member": "kernelcache.release.iphone15b",
+    "archive_size": 10143723378,
+    "sha256": "bf25ec3d0db89294e1794be3b27a0184110463d77dc1090854eababfba600ef7",
+    "size": 20353866,
+    "recipe": "Extract the exact ZIP member; verify SHA-256 before transformation.",
+    "compatibility": "iPhone15,5 / d38ap / iOS 26.3 / 23D127"
+  },
+  {
+    "role": "txm",
+    "url": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/089-67892/3BBFFF30-FCEB-42EC-B961-E7503AA79675/iPhone15,5_26.3_23D127_Restore.ipsw",
+    "member": "Firmware/txm.iphoneos.release.im4p",
+    "archive_size": 10143723378,
+    "sha256": "3453eb476cfb53d828882527256356328ce65a3004c37e23ff4c34887586ecad",
+    "size": 161025,
+    "recipe": "Extract the exact ZIP member; verify SHA-256 before transformation.",
+    "compatibility": "iPhone15,5 / d38ap / iOS 26.3 / 23D127"
+  },
+  {
+    "role": "sptm",
+    "url": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/089-67892/3BBFFF30-FCEB-42EC-B961-E7503AA79675/iPhone15,5_26.3_23D127_Restore.ipsw",
+    "member": "Firmware/sptm.t8120.release.im4p",
+    "archive_size": 10143723378,
+    "sha256": "30cfe0962bfbe47f6f5ed0f16294379b38d5630976a627e06317785903b62d4c",
+    "size": 175950,
+    "recipe": "Extract the exact ZIP member; verify SHA-256 before transformation.",
+    "compatibility": "iPhone15,5 / d38ap / iOS 26.3 / 23D127"
+  },
+  {
+    "role": "device-tree",
+    "url": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/089-67892/3BBFFF30-FCEB-42EC-B961-E7503AA79675/iPhone15,5_26.3_23D127_Restore.ipsw",
+    "member": "Firmware/all_flash/DeviceTree.d38ap.im4p",
+    "archive_size": 10143723378,
+    "sha256": "41bc904dd36bd12488b63a7efc5040cbfd7204db201d86c53db194cf05dabcfb",
+    "size": 52877,
+    "recipe": "Extract the exact ZIP member; verify SHA-256 before transformation.",
+    "compatibility": "iPhone15,5 / d38ap / iOS 26.3 / 23D127"
+  },
+  {
+    "role": "trust-cache",
+    "url": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/089-67892/3BBFFF30-FCEB-42EC-B961-E7503AA79675/iPhone15,5_26.3_23D127_Restore.ipsw",
+    "member": "Firmware/043-48593-153.dmg.trustcache",
+    "archive_size": 10143723378,
+    "sha256": "d667a9bb0bd4cb5d227f429715f60e775338212c1e525aaea2d82b43305c466c",
+    "size": 7923,
+    "recipe": "Extract the exact ZIP member; verify SHA-256 before transformation.",
+    "compatibility": "iPhone15,5 / d38ap / iOS 26.3 / 23D127"
+  },
+  {
+    "role": "sep",
+    "url": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/089-67892/3BBFFF30-FCEB-42EC-B961-E7503AA79675/iPhone15,5_26.3_23D127_Restore.ipsw",
+    "member": "Firmware/all_flash/sep-firmware.d38.RELEASE.im4p",
+    "archive_size": 10143723378,
+    "sha256": "00d96760d69491698d41a90f49608b182617de45c7d8b4eb5562d5826f75751e",
+    "size": 7308049,
+    "recipe": "Extract the exact ZIP member; verify SHA-256 before transformation.",
+    "compatibility": "iPhone15,5 / d38ap / iOS 26.3 / 23D127"
+  },
+  {
+    "role": "logo",
+    "url": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/089-67892/3BBFFF30-FCEB-42EC-B961-E7503AA79675/iPhone15,5_26.3_23D127_Restore.ipsw",
+    "member": "Firmware/all_flash/applelogo@2796~iphone.im4p",
+    "archive_size": 10143723378,
+    "sha256": "19b6fce13532ddc32b68665be44d7ac1854ea1083d4365eaf38a1d09200f4a72",
+    "size": 19193,
+    "recipe": "Extract the exact ZIP member; verify SHA-256 before transformation.",
+    "compatibility": "iPhone15,5 / d38ap / iOS 26.3 / 23D127"
+  },
+  {
+    "role": "ane",
+    "url": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/089-67892/3BBFFF30-FCEB-42EC-B961-E7503AA79675/iPhone15,5_26.3_23D127_Restore.ipsw",
+    "member": "Firmware/ane/h15_ane_fw_themis_d7x.im4p",
+    "archive_size": 10143723378,
+    "sha256": "b2e2a16b9a1b6744997bc602a78db63609f43145b635be33f55b8cffe742e554",
+    "size": 1605657,
+    "recipe": "Extract the exact ZIP member; verify SHA-256 before transformation.",
+    "compatibility": "iPhone15,5 / d38ap / iOS 26.3 / 23D127"
+  },
+  {
+    "role": "aop",
+    "url": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/089-67892/3BBFFF30-FCEB-42EC-B961-E7503AA79675/iPhone15,5_26.3_23D127_Restore.ipsw",
+    "member": "Firmware/AOP/aopfw-iphone15baop.RELEASE.im4p",
+    "archive_size": 10143723378,
+    "sha256": "40052211cf9cb33474b52bbcbc49a98aaf72dec5e71699b9b248ddc892cb792b",
+    "size": 3002393,
+    "recipe": "Extract the exact ZIP member; verify SHA-256 before transformation.",
+    "compatibility": "iPhone15,5 / d38ap / iOS 26.3 / 23D127"
+  },
+  {
+    "role": "ave",
+    "url": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/089-67892/3BBFFF30-FCEB-42EC-B961-E7503AA79675/iPhone15,5_26.3_23D127_Restore.ipsw",
+    "member": "Firmware/ave/AppleAVE2FW_H15.im4p",
+    "archive_size": 10143723378,
+    "sha256": "815d83ba06ddb26743bffe0dfa9792305b98c0dbcfe7a81e132242ea6e40b1e9",
+    "size": 2525897,
+    "recipe": "Extract the exact ZIP member; verify SHA-256 before transformation.",
+    "compatibility": "iPhone15,5 / d38ap / iOS 26.3 / 23D127"
+  },
+  {
+    "role": "gfx",
+    "url": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/089-67892/3BBFFF30-FCEB-42EC-B961-E7503AA79675/iPhone15,5_26.3_23D127_Restore.ipsw",
+    "member": "Firmware/agx/armfw_g15p.im4p",
+    "archive_size": 10143723378,
+    "sha256": "22111f8e79fa986f7755c1e6c96574a35aac4f3ab6d7869ef1209c7fdd02dfdf",
+    "size": 1515257,
+    "recipe": "Extract the exact ZIP member; verify SHA-256 before transformation.",
+    "compatibility": "iPhone15,5 / d38ap / iOS 26.3 / 23D127"
+  },
+  {
+    "role": "isp",
+    "url": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/089-67892/3BBFFF30-FCEB-42EC-B961-E7503AA79675/iPhone15,5_26.3_23D127_Restore.ipsw",
+    "member": "Firmware/isp_bni/adc-kronos-d3y.im4p",
+    "archive_size": 10143723378,
+    "sha256": "7c47694bf143b59847009e664fedbce17b6740b99a6cb36777876b5cbbba80ea",
+    "size": 22020123,
+    "recipe": "Extract the exact ZIP member; verify SHA-256 before transformation.",
+    "compatibility": "iPhone15,5 / d38ap / iOS 26.3 / 23D127"
+  },
+  {
+    "role": "mtpfirmware",
+    "url": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/089-67892/3BBFFF30-FCEB-42EC-B961-E7503AA79675/iPhone15,5_26.3_23D127_Restore.ipsw",
+    "member": "Firmware/D38_MtpFirmware.im4p",
+    "archive_size": 10143723378,
+    "sha256": "45ddb15d43d8d54baf26f8fbcd8b108dc17ff1605fadf6fdd889010854ce463a",
+    "size": 5136361,
+    "recipe": "Extract the exact ZIP member; verify SHA-256 before transformation.",
+    "compatibility": "iPhone15,5 / d38ap / iOS 26.3 / 23D127"
+  },
+  {
+    "role": "pmp",
+    "url": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/089-67892/3BBFFF30-FCEB-42EC-B961-E7503AA79675/iPhone15,5_26.3_23D127_Restore.ipsw",
+    "member": "Firmware/pmp/t8120pmp.im4p",
+    "archive_size": 10143723378,
+    "sha256": "1892e09ae8ab6bec07127fc7d41c0df391f9310e5add11cfe17d60ec7b7f6988",
+    "size": 516121,
+    "recipe": "Extract the exact ZIP member; verify SHA-256 before transformation.",
+    "compatibility": "iPhone15,5 / d38ap / iOS 26.3 / 23D127"
+  },
+  {
+    "role": "restoreans",
+    "url": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/089-67892/3BBFFF30-FCEB-42EC-B961-E7503AA79675/iPhone15,5_26.3_23D127_Restore.ipsw",
+    "member": "Firmware/rans.t8120.release.im4p",
+    "archive_size": 10143723378,
+    "sha256": "38ce02005c6617a984930a5ad7f06fe28092075fef27c5d162341ec2190db346",
+    "size": 1022673,
+    "recipe": "Extract the exact ZIP member; verify SHA-256 before transformation.",
+    "compatibility": "iPhone15,5 / d38ap / iOS 26.3 / 23D127"
+  },
+  {
+    "role": "restoredcp",
+    "url": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/089-67892/3BBFFF30-FCEB-42EC-B961-E7503AA79675/iPhone15,5_26.3_23D127_Restore.ipsw",
+    "member": "Firmware/dcp/iphone15dcp_restore.im4p",
+    "archive_size": 10143723378,
+    "sha256": "a6752a19f265dee33b79d34ab89f716af0c434f9472eba411787d37b364ef7ba",
+    "size": 1632826,
+    "recipe": "Extract the exact ZIP member; verify SHA-256 before transformation.",
+    "compatibility": "iPhone15,5 / d38ap / iOS 26.3 / 23D127"
+  },
+  {
+    "role": "sio",
+    "url": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/089-67892/3BBFFF30-FCEB-42EC-B961-E7503AA79675/iPhone15,5_26.3_23D127_Restore.ipsw",
+    "member": "Firmware/SmartIOFirmware_ASCv6.im4p",
+    "archive_size": 10143723378,
+    "sha256": "a8c269f29582d8907af1f958700ea64d68883bdbbc01e345f18f0f1eff9372bd",
+    "size": 1152821,
+    "recipe": "Extract the exact ZIP member; verify SHA-256 before transformation.",
+    "compatibility": "iPhone15,5 / d38ap / iOS 26.3 / 23D127"
+  },
+  {
+    "role": "wchfirmwareupdater",
+    "url": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/089-67892/3BBFFF30-FCEB-42EC-B961-E7503AA79675/iPhone15,5_26.3_23D127_Restore.ipsw",
+    "member": "Firmware/WirelessPower/WirelessPower.iphone16.im4p",
+    "archive_size": 10143723378,
+    "sha256": "3593084094de7ef7db75b300298c20806e080534e41a28d26f521e947903243f",
+    "size": 215411,
+    "recipe": "Extract the exact ZIP member; verify SHA-256 before transformation.",
+    "compatibility": "iPhone15,5 / d38ap / iOS 26.3 / 23D127"
+  },
+  {
+    "role": "ibootdata",
+    "url": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/089-67892/3BBFFF30-FCEB-42EC-B961-E7503AA79675/iPhone15,5_26.3_23D127_Restore.ipsw",
+    "member": "Firmware/all_flash/iBootData.d38.RELEASE.im4p",
+    "archive_size": 10143723378,
+    "sha256": "4d85ea5bf30cc1f7654e5ccd02f0d3321241c31f74a47ad888a1ecfc3763c757",
+    "size": 123,
+    "recipe": "Extract the exact ZIP member; verify SHA-256 before transformation.",
+    "compatibility": "iPhone15,5 / d38ap / iOS 26.3 / 23D127"
+  },
+  {
+    "role": "restore-system",
+    "url": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/089-67892/3BBFFF30-FCEB-42EC-B961-E7503AA79675/iPhone15,5_26.3_23D127_Restore.ipsw",
+    "member": "043-48593-153.dmg",
+    "archive_size": 10143723378,
+    "sha256": "217ced5e10967676550ddaff8c174e06595ac8f8dc2e0584c874e70f747e4348",
+    "size": 226492443,
+    "recipe": "Extract the exact Apple restore-system IM4P; verify SHA-256 before deriving the volatile root.",
+    "compatibility": "iPhone15,5 / d38ap / iOS 26.3 / 23D127"
+  }
+]

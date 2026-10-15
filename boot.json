@@ -1,0 +1,20 @@
+{
+  "profile": "d38ap-23D127",
+  "firmware": [
+    {"role": "ane", "command": "firmware"},
+    {"role": "aop", "command": "firmware"},
+    {"role": "ave", "command": "firmware"},
+    {"role": "sptm", "command": "firmware"},
+    {"role": "txm", "command": "firmware"},
+    {"role": "gfx", "command": "firmware"},
+    {"role": "isp", "command": "firmware"},
+    {"role": "mtpfirmware", "command": "firmware"},
+    {"role": "pmp", "command": "firmware"},
+    {"role": "restoreans", "command": "firmware"},
+    {"role": "restoredcp", "command": "firmware"},
+    {"role": "trust-cache", "command": "firmware"},
+    {"role": "sio", "command": "firmware"},
+    {"role": "wchfirmwareupdater", "command": "firmware"},
+    {"role": "ibootdata", "command": "firmware"}
+  ]
+}

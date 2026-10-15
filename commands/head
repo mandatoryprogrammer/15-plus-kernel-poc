@@ -1,0 +1,31 @@
+#!/bin/bash
+count=10
+if [[ ${1-} == -n ]]; then
+  [[ ${2-} =~ ^[0-9]+$ ]] || { echo "head: invalid line count" >&2; exit 64; }
+  count=$2
+  shift 2
+elif [[ ${1-} =~ ^-[0-9]+$ ]]; then
+  count=${1#-}
+  shift
+fi
+
+head_stream() {
+  local line seen=0
+  while (( seen < count )) && IFS= read -r line; do
+    printf '%s\n' "$line"
+    (( seen++ ))
+  done
+}
+
+if (( $# == 0 )); then
+  head_stream
+  exit
+fi
+status=0
+multiple=$(( $# > 1 ))
+for file in "$@"; do
+  if [[ ! -r $file ]]; then echo "head: $file: cannot read" >&2; status=1; continue; fi
+  (( multiple )) && printf '==> %s <==\n' "$file"
+  head_stream < "$file"
+done
+exit "$status"

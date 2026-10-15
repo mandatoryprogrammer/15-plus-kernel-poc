@@ -1,0 +1,6 @@
+#!/bin/bash
+if (( $# )); then
+  echo "usage: whoami" >&2
+  exit 64
+fi
+printf '%s\n' "${USER:-root}"

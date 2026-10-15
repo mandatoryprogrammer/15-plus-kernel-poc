@@ -1,0 +1,14 @@
+#!/bin/bash
+if (( $# == 0 )); then
+  exec /usr/bin/env
+fi
+
+status=0
+for name in "$@"; do
+  if [[ ! $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ || -z ${!name+x} ]]; then
+    status=1
+    continue
+  fi
+  printf '%s\n' "${!name}"
+done
+exit "$status"

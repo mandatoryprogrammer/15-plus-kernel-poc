@@ -1,0 +1,17 @@
+#!/bin/bash
+if [[ ${1-} == -- ]]; then shift; fi
+
+while (( $# )); do
+  assignment=$1
+  name=${assignment%%=*}
+  if [[ $assignment != *=* || ! $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    break
+  fi
+  export "$assignment"
+  shift
+done
+
+if (( $# )); then
+  exec "$@"
+fi
+export -p | /usr/bin/sed 's/^declare -x //'

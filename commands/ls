@@ -1,0 +1,82 @@
+#!/bin/bash
+
+show_all=0
+long=0
+directory_only=0
+classify=0
+
+while [[ $# -gt 0 && $1 == -* && $1 != - ]]; do
+  if [[ $1 == -- ]]; then
+    shift
+    break
+  fi
+  options=${1#-}
+  while [[ -n $options ]]; do
+    option=${options:0:1}
+    options=${options:1}
+    case "$option" in
+      a|A) show_all=1 ;;
+      l) long=1 ;;
+      d) directory_only=1 ;;
+      F) classify=1 ;;
+      1) ;;
+      *) echo "ls: unsupported option -- $option" >&2; exit 64 ;;
+    esac
+  done
+  shift
+done
+
+entry_type() {
+  if [[ -L $1 ]]; then printf 'link'
+  elif [[ -d $1 ]]; then printf 'directory'
+  elif [[ -c $1 ]]; then printf 'character-device'
+  elif [[ -b $1 ]]; then printf 'block-device'
+  elif [[ -p $1 ]]; then printf 'fifo'
+  elif [[ -S $1 ]]; then printf 'socket'
+  else printf 'file'
+  fi
+}
+
+print_entry() {
+  local item=$1 display=$2 suffix=
+  if (( classify )); then
+    if [[ -d $item ]]; then suffix=/
+    elif [[ -L $item ]]; then suffix=@
+    elif [[ -x $item ]]; then suffix='*'
+    fi
+  fi
+  if (( long )); then
+    printf '%-16s %s%s\n' "$(entry_type "$item")" "$display" "$suffix"
+  else
+    printf '%s%s\n' "$display" "$suffix"
+  fi
+}
+
+list_directory() {
+  local directory=$1 item
+  local -a items
+  shopt -s nullglob
+  if (( show_all )); then shopt -s dotglob; else shopt -u dotglob; fi
+  items=( "$directory"/* )
+  for item in "${items[@]}"; do
+    print_entry "$item" "${item##*/}"
+  done
+}
+
+(( $# )) || set -- .
+status=0
+multiple=$(( $# > 1 ))
+for item in "$@"; do
+  if [[ ! -e $item && ! -L $item ]]; then
+    echo "ls: $item: No such file or directory" >&2
+    status=1
+    continue
+  fi
+  if [[ -d $item && ! -L $item && $directory_only -eq 0 ]]; then
+    (( multiple )) && printf '%s:\n' "$item"
+    list_directory "$item"
+  else
+    print_entry "$item" "$item"
+  fi
+done
+exit "$status"

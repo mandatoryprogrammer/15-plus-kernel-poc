@@ -1,0 +1,17 @@
+#!/bin/bash
+if (( $# == 0 )); then
+  echo "usage: which COMMAND [...]" >&2
+  exit 64
+fi
+status=0
+for name in "$@"; do
+  location=$(type -P -- "$name" 2>/dev/null)
+  if [[ -n $location ]]; then
+    printf '%s\n' "$location"
+  elif [[ $(type -t -- "$name" 2>/dev/null) == builtin ]]; then
+    printf '%s: shell builtin\n' "$name"
+  else
+    status=1
+  fi
+done
+exit "$status"

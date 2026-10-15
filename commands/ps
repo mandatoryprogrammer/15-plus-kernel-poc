@@ -1,0 +1,20 @@
+#!/bin/bash
+case "${1-}" in
+  ""|-e|-ef|ax|aux) ;;
+  *) echo "usage: ps [-e|-ef|ax|aux]" >&2; exit 64 ;;
+esac
+
+printf '%5s %5s %-8s %s\n' PID PPID USER COMMAND
+printf '%5d %5d %-8s %s\n' 1 0 "${USER:-root}" /sbin/launchd
+for (( pid=2; pid<=$$; pid++ )); do
+  if ! kill -0 "$pid" 2>/dev/null; then
+    continue
+  fi
+  parent='?'
+  command='[process]'
+  case "$pid" in
+    "$PPID") command="${SHELL:-/bin/sh}" ;;
+    "$$") parent=$PPID; command=/usr/bin/ps ;;
+  esac
+  printf '%5d %5s %-8s %s\n' "$pid" "$parent" "${USER:-root}" "$command"
+done

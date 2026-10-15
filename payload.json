@@ -1,0 +1,275 @@
+[
+  {
+    "destination": "/bin/bash",
+    "sha256": "ab86be27193aa192b1b2c6587de722d6bb3006359afb09a2048a3d53186d5c25",
+    "size": 671264,
+    "cdhash": "4e5179283ff7f8b3dd8daa211344142cbfb6a071",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/bin/cat",
+    "sha256": "88a98cb0cc63a6246d6946427586a92cfdc370458736988c92e0ec79a55db76a",
+    "size": 53392,
+    "cdhash": "3168e4759443d89695280870c83887ae34a0abc4",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/bin/expr",
+    "sha256": "f102da0cd4b4b74e5fba31b339e552739dfceee7e9ee778fca3da9fcf8c69fa6",
+    "size": 52784,
+    "cdhash": "045a645a740c74ac41a5f59c91a88c71cb72a21f",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/bin/ln",
+    "sha256": "c532499038558d05dfff81ebbbdf93bf009ac82064603d31cd40dbccc9267f41",
+    "size": 52976,
+    "cdhash": "d703b6070078b0053da17995e88030e1b4c274d4",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/bin/mkdir",
+    "sha256": "852a2b75b4408dea76f2362398f5f28d7101bc25a196e8a5e5efaaa04fd59bd0",
+    "size": 52256,
+    "cdhash": "89127fcc4e887496092761e4d50696a7d28a8d18",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/bin/mv",
+    "sha256": "7c53655131e99fbe186253c31767d178c8f30c123c139a390c4cb436999c8057",
+    "size": 53872,
+    "cdhash": "b2e13f8dff2985c696cc59d57e1c4eaf8ca89c5d",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/bin/rm",
+    "sha256": "dc37342db839481040309757d958317bec979667fc148d9391af48fd90e1f5ce",
+    "size": 53616,
+    "cdhash": "7aec06ec3fff294f356c7c00b224d9b5cd943ee0",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/bin/sh",
+    "sha256": "bd47247ee22459a2f2141b1381be39a3e6e4d032cd62df32b4f25fbf0601c873",
+    "size": 52112,
+    "cdhash": "8fa6984248492922f9e6f5055e152a1ccbdc1e2a",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/sbin/apfs_hfs_convert",
+    "sha256": "d3699b7cbad1f06947755ec09d1eb3b60bb9254053fd7a16b843f29ee7891057",
+    "size": 611088,
+    "cdhash": "022ab98cf0aed2d99dcaab7d32bdd1ca396f6c54",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/sbin/fsck",
+    "sha256": "61cfad130c73a539e90e6f4a6c7a62c1e7b49343d4c4a79596f3e1b982f0b1e3",
+    "size": 70992,
+    "cdhash": "89199c8dd59bfd3436743c6977da029f0bc3030c",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/sbin/fsck_apfs",
+    "sha256": "08cd9c903b9e0d0132d44c49cf5f4ad62e2fd7009b7a74d3d2496cf55ca65e57",
+    "size": 561968,
+    "cdhash": "905f4568a6f2a9052f9d934a9b27739fef718482",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/sbin/fsck_hfs",
+    "sha256": "1934316f29728014bb2381dc1912650fef86b9f2f2985d18cc87979d8cff10e0",
+    "size": 307424,
+    "cdhash": "576d164dc0f2ad3aa2492627ad3b21c0ea23998e",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/sbin/halt",
+    "sha256": "00cd6325939582af75e7462b6926547b53642f308f059f553542c82858030005",
+    "size": 53680,
+    "cdhash": "f26b4ca6c367d6daa8e2f6d053d4f85b017f1ec8",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/sbin/launchd",
+    "sha256": "270b4f57b2c60b2e51b4bba3bc74598c7e294c1a2c1e53af9da664e82e440b61",
+    "size": 595424,
+    "cdhash": "487e738cf133ac7ad7cf4828b94dd442ed0bdbe0",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/sbin/mount",
+    "sha256": "0c772125235ac292760a3464329b996ab0272095e756de2487cfc2808e568f9c",
+    "size": 112864,
+    "cdhash": "f2b1343470a7ccb1e01c2edc6072a87a35cb1a24",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/sbin/mount_apfs",
+    "sha256": "46820a38129c9c4a2b0db142bdf01c15ec0cfffd4cea643bf88f9cab3975a7a1",
+    "size": 72896,
+    "cdhash": "c3dd716d86d70590e7057a5d5f4315b2248b19e0",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/sbin/mount_hfs",
+    "sha256": "77c63c715517c0ad37e09449e7d01527cffb633d5ead8f668dd4e32488a16937",
+    "size": 72672,
+    "cdhash": "c636d5f8856b78ec2a527b5961fc151bb40e9975",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/sbin/mount_tmpfs",
+    "sha256": "82ba15386c84f410d4e53a80d2d7a990c75a4408995bb4e116aa815b55d61cb8",
+    "size": 69136,
+    "cdhash": "132694984c9437351dfbd92111b07228507b5433",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/sbin/newfs_apfs",
+    "sha256": "8d381b30576d439d9b4053460298c7c96b30e9e80e2f5b961584298ae7bb31c7",
+    "size": 508496,
+    "cdhash": "96f144e313053b7cbe7f3e36432ba342ece7c4c0",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/sbin/newfs_hfs",
+    "sha256": "60b2dbca102350dce69b3a64434ee5d01e4354d8a0b4985a5a0acc2bcd5fd3b6",
+    "size": 87984,
+    "cdhash": "e8f149825d471c234805e55d2ba419a0189160b2",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/sbin/reboot",
+    "sha256": "00cd6325939582af75e7462b6926547b53642f308f059f553542c82858030005",
+    "size": 53680,
+    "cdhash": "f26b4ca6c367d6daa8e2f6d053d4f85b017f1ec8",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/usr/bin/TiSerialFlasher",
+    "sha256": "fa2e9798c20c4baf53d8a294a18747ea53dc7f3bb190b66bf7e951e71e3cee6d",
+    "size": 68496,
+    "cdhash": "7efac09b40380bd45549f7c7c07fdfc8eefeea05",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/usr/bin/ampctl",
+    "sha256": "b5cdd873b2d9ff61138ba175e75c4c73c40009623d8461c7c75da8ccf5937c4d",
+    "size": 90912,
+    "cdhash": "c15ce12bc0807cdecf2f6d9e90f816a9f1265a8f",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/usr/bin/nvmefwupdater",
+    "sha256": "c54a54c201d72ac7aedf91a706402b2f400bf60b3196690c7169aa4cbd4dc83f",
+    "size": 108368,
+    "cdhash": "4a98ae7b496785d417f5026827b3cb55bffd66ad",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/usr/bin/orionmicroupdate",
+    "sha256": "40293db452c59a0ca890db9aa23ad87421cc101ac9e92326f2c894b2673cf271",
+    "size": 53568,
+    "cdhash": "bbcef40057178471a848256d50adbbd1c71e8daa",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/usr/bin/peppytool",
+    "sha256": "9f5b24b01483adef3f5d93510be44b5faaf4567207d86d3fa2a545ba22ca8558",
+    "size": 72048,
+    "cdhash": "241052b6781467a059c3553e2c2e55bba2e9f876",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/usr/bin/sed",
+    "sha256": "b9b8fa63223e416143632f49fcb50b003255b3a61cebfb6024a6aa4f94d59366",
+    "size": 88336,
+    "cdhash": "4710035037e973b52f5dacaf14e8a2c0a71a90ed",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/usr/bin/update_mcdp29xx",
+    "sha256": "a9aaa4336bed4ec63ec8124b8c65794f2bfdf3313dba1efda32ebb6b7fbf6867",
+    "size": 97568,
+    "cdhash": "04cc3f948879c5ccfd80415ab139b5c610a94802",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/usr/bin/usbcfwflasher",
+    "sha256": "63d50557b4e343d5cf067417564169158fda9e2e16c1b482ff52249bc79743b3",
+    "size": 72480,
+    "cdhash": "40f12912cecfaff67d1dd68bcd1acfade00e7f27",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/usr/local/libexec/sftp-server",
+    "sha256": "271833e5d62ab5ed424d7a7a2680a334dc2d6d2c202b33586cca013f314862b9",
+    "size": 162512,
+    "cdhash": "779caaa16c3657fd7edade3cf1be6a5a5dc99e71",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/usr/local/sbin/sshd",
+    "sha256": "3dbb390ce2b88e20d60eb6ba9a6121064de9b420f40f930db315bc328a13777b",
+    "size": 768640,
+    "cdhash": "642993b441a85a215a22743ffec4fa3bf0292e51",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/usr/sbin/asr",
+    "sha256": "3c9b731c9573d1c5d898d39bf2f7596c8c37b189ffcbd829e1d3d6ad8814e716",
+    "size": 396864,
+    "cdhash": "355082c7aaff4386e22263c85ded63aa7cbbd6a6",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/usr/sbin/dietappleh13camerad",
+    "sha256": "ebf6a51c7ff977c907aeeeb41629a96d1493a2ef4dfb8ac4b5a8304b958f477e",
+    "size": 2733248,
+    "cdhash": "b39d5674afbf071740fb7af17813090a0f34a2af",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/usr/sbin/dietappleh16camerad",
+    "sha256": "b0b9b4f455f99b1d707646ae6c84106adf5e6ff207c01aa64971cf4a8ddadff4",
+    "size": 3906864,
+    "cdhash": "4d4290ea695d945c9957e676fcd4037f0844f65e",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/usr/sbin/hdik",
+    "sha256": "e0b4b8b62ed00668a4dfb282d434a49c1db4dcd02b257c89cb9089f1659f45c6",
+    "size": 58480,
+    "cdhash": "9a372451b1c2a507b28cc19af0f09682fda33be0",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/usr/sbin/ioreg",
+    "sha256": "33293ca0920e69c46b6f727e69c35a0934037bb832911a3b473889584af2753a",
+    "size": 75072,
+    "cdhash": "9c6132069563b2b651a170fa267e75030ed9105c",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/usr/sbin/mtree",
+    "sha256": "f1ebdd1b11a889fda9786e3e83be7f5462f94f52983b31a31151b4b3c9b67271",
+    "size": 108416,
+    "cdhash": "59294d8899aa0fea8017b64460651d9ee85d284a",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/usr/sbin/nvram",
+    "sha256": "c5901ee873b48caedcc26f37f9cbde0104c751b18a69e7f5301954a8ba7def7d",
+    "size": 57392,
+    "cdhash": "4a3270667d8a6926ec6d5c787a41f0c347543727",
+    "origin": "verified base root"
+  },
+  {
+    "destination": "/usr/sbin/syslogd",
+    "sha256": "1e0a7c70ad7ce3f74dad1012a5d7585ac3040e212a0f6b8023256fd46c7aceae",
+    "size": 183440,
+    "cdhash": "2393f16e451514895c049166f4cd502e90f85393",
+    "origin": "verified base root"
+  }
+]

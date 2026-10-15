@@ -1,0 +1,11 @@
+#!/bin/bash
+cat <<'EOF'
+External commands:
+  basename cat clear commands dirname env expr find grep head hostname id
+  ioreg ls mkdir mount mtree mv nvram printenv ps rm sed storage uname w which
+
+Shell builtins include:
+  cd echo export history kill printf pwd read test true false type ulimit umask
+
+Commands with required arguments print concise usage when invoked without them.
+EOF

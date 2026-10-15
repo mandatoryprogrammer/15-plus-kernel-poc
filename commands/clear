@@ -1,0 +1,6 @@
+#!/bin/bash
+if (( $# )); then
+  echo "usage: clear" >&2
+  exit 64
+fi
+printf '\033[H\033[2J'

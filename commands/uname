@@ -1,0 +1,10 @@
+#!/bin/bash
+case "${1-}" in
+  ""|-a)
+    /usr/sbin/ioreg -l -w0 -d1 | /usr/bin/sed -n 's/^.*"IOKitBuildVersion" = "\(.*\)"$/\1/p'
+    ;;
+  *)
+    echo "usage: uname [-a]" >&2
+    exit 64
+    ;;
+esac

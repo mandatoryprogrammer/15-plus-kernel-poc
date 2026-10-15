@@ -1,0 +1,11 @@
+/.cache/
+/15-plus-kernel-poc
+/.DS_Store
+*.dmg
+*.ipsw
+*.img4
+*.im4p
+*.der
+*.log
+*.pem
+*.key

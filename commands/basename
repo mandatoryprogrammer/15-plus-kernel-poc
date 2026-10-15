@@ -1,0 +1,12 @@
+#!/bin/bash
+if (( $# < 1 || $# > 2 )); then
+  echo "usage: basename PATH [SUFFIX]" >&2
+  exit 64
+fi
+value=$1
+while [[ $value != / && $value == */ ]]; do value=${value%/}; done
+value=${value##*/}
+if [[ -n ${2-} && $value == *"$2" && $value != "$2" ]]; then
+  value=${value%"$2"}
+fi
+printf '%s\n' "$value"

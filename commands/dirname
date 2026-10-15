@@ -1,0 +1,15 @@
+#!/bin/bash
+if (( $# != 1 )); then
+  echo "usage: dirname PATH" >&2
+  exit 64
+fi
+value=$1
+while [[ $value != / && $value == */ ]]; do value=${value%/}; done
+if [[ $value != */* ]]; then
+  printf '.\n'
+  exit
+fi
+value=${value%/*}
+while [[ $value != / && $value == */ ]]; do value=${value%/}; done
+[[ -n $value ]] || value=/
+printf '%s\n' "$value"

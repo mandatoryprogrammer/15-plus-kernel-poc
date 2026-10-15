@@ -1,0 +1,9 @@
+#!/bin/bash
+case "${1-}" in
+  "") printf 'uid=%s(root) gid=0(root) groups=0(root)\n' "$UID" ;;
+  -u) printf '%s\n' "$UID" ;;
+  -un|-nu) printf '%s\n' "${USER:-root}" ;;
+  -g) printf '0\n' ;;
+  -gn|-ng) printf 'root\n' ;;
+  *) echo "usage: id [-u|-un|-g|-gn]" >&2; exit 64 ;;
+esac

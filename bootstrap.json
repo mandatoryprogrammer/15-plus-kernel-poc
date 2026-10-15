@@ -1,0 +1,90 @@
+{
+  "boot": [
+    {
+      "role": "ibec",
+      "sha256": "20835ca7f17748cda4fee288c60f5c133df06a2b278a3bec43ca7771db78edc6",
+      "size": 1212370,
+      "recipe": "Prepared matching recovery loader with guarded volatile admission and ramdisk support",
+      "compatibility": "iPhone 15 Plus d38ap, CPFM00, iOS 26.3 build 23D127"
+    },
+    {
+      "role": "kernel",
+      "sha256": "d3b1ca729e2e21cb2963599d89d676eaf5f1761d14237a652474556e095ab8ea",
+      "size": 20357523,
+      "recipe": "Prepared restore kernel with guarded volatile root and serial-service support",
+      "compatibility": "iPhone 15 Plus d38ap, CPFM00, iOS 26.3 build 23D127"
+    },
+    {
+      "role": "sptm",
+      "sha256": "fc695594d1a15eb4530c1f2bbc8f2549d9cdd258eaa9a235975cbd247fb48af0",
+      "size": 175950,
+      "recipe": "Prepared restore SPTM component",
+      "compatibility": "iPhone 15 Plus d38ap, CPFM00, iOS 26.3 build 23D127"
+    },
+    {
+      "role": "txm",
+      "sha256": "5138865002fe38ef18b47ecc5380a1faf86b34dc4f423ec76b5dd1e3a3b41bcf",
+      "size": 161204,
+      "recipe": "Prepared restore TXM component",
+      "compatibility": "iPhone 15 Plus d38ap, CPFM00, iOS 26.3 build 23D127"
+    },
+    {
+      "role": "device-tree",
+      "sha256": "a814e168acc6b74245c2539f9782bc3a79bef1fdc98b0329f4da784c1f5e7f5f",
+      "size": 52879,
+      "recipe": "Prepared d38ap restore device tree",
+      "compatibility": "iPhone 15 Plus d38ap, CPFM00, iOS 26.3 build 23D127"
+    },
+    {
+      "role": "trust-cache",
+      "sha256": "d2bf87aa25eb84b8ece5d29cf2647dd641ed44a668a7eac82fb093f79a47a1b3",
+      "size": 80459,
+      "recipe": "Prepared restore trust cache for the base shell payload",
+      "compatibility": "iPhone 15 Plus d38ap, CPFM00, iOS 26.3 build 23D127"
+    }
+  ],
+  "runtime": [
+    {
+      "role": "ramdisk",
+      "sha256": "f3f0bb75cbf08580778a58dcc65533d392dfff454c720a5debd70a882c7b22a5",
+      "size": 226492443,
+      "recipe": "Volatile APFS restore root containing the base shell and serial file service",
+      "compatibility": "Any supported iPhone 15 Plus CPFM00 board"
+    },
+    {
+      "role": "ibec",
+      "sha256": "9a36b5a8fc28850145431c6c6fa4e3f2672da9d454100027da14d8f9411ad9a9",
+      "size": 1212423,
+      "recipe": "Prepared matching loader bound to the runtime ramdisk and base trust cache",
+      "compatibility": "Any supported iPhone 15 Plus CPFM00 board"
+    },
+    {
+      "role": "trust-cache",
+      "sha256": "7a2dfe7014cdc991d56b8d8332df4dd2a416ab589cfaa7d54766259f7baba1ba",
+      "size": 80591,
+      "recipe": "Prepared base trust cache; user payload entries are added in memory",
+      "compatibility": "Any supported iPhone 15 Plus CPFM00 board"
+    },
+    {
+      "role": "kernel",
+      "sha256": "fbea83d1bf68046bb983327efcc11b2379d439f6d9a9475616e91d0d990bc4ae",
+      "size": 20358886,
+      "recipe": "Prepared restore kernel; embedded policy is neutralized and rebound in memory",
+      "compatibility": "Any supported iPhone 15 Plus CPFM00 board"
+    },
+    {
+      "role": "sptm",
+      "sha256": "1e2686cf0e53b8ec36f7edd71c284f328a4b24d6beedde3f69fcc019d8a7a430",
+      "size": 175948,
+      "recipe": "Prepared runtime SPTM component",
+      "compatibility": "Any supported iPhone 15 Plus CPFM00 board"
+    },
+    {
+      "role": "txm",
+      "sha256": "2c52e01f95dc85995cf3d1845ae7fce7faf473a6869aedb1421499940e78f034",
+      "size": 161194,
+      "recipe": "Prepared runtime TXM component",
+      "compatibility": "Any supported iPhone 15 Plus CPFM00 board"
+    }
+  ]
+}

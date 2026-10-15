@@ -1,0 +1,44 @@
+#!/bin/bash
+line_numbers=0
+ignore_case=0
+while [[ ${1-} == -* && ${1-} != - ]]; do
+  case "$1" in
+    --) shift; break ;;
+    -n) line_numbers=1 ;;
+    -i) ignore_case=1 ;;
+    -in|-ni) line_numbers=1; ignore_case=1 ;;
+    *) echo "grep: supported options are -i and -n" >&2; exit 64 ;;
+  esac
+  shift
+done
+(( $# )) || { echo "usage: grep [-in] PATTERN [FILE ...]" >&2; exit 64; }
+pattern=$1
+shift
+(( ignore_case )) && shopt -s nocasematch
+(( $# )) || set -- -
+multiple=$(( $# > 1 ))
+matched=1
+scan_input() {
+  local file=$1 line line_number=0 prefix
+  while IFS= read -r line || [[ -n $line ]]; do
+    (( line_number++ ))
+    if [[ $line =~ $pattern ]]; then
+      prefix=
+      (( multiple )) && prefix="$file:"
+      (( line_numbers )) && prefix="${prefix}${line_number}:"
+      printf '%s%s\n' "$prefix" "$line"
+      matched=0
+    fi
+  done
+}
+
+for file in "$@"; do
+  if [[ $file == - ]]; then
+    scan_input "$file"
+  elif [[ -r $file ]]; then
+    scan_input "$file" < "$file"
+  else
+    echo "grep: $file: cannot read" >&2
+  fi
+done
+exit "$matched"
