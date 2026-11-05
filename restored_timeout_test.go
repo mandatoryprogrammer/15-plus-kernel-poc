@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -85,5 +86,36 @@ func TestRestoredHostTimeoutPreimageRejectsNonNumericValue(t *testing.T) {
 		if _, err := preimage.restoreCommand(); err == nil {
 			t.Fatalf("invalid preimage accepted: %#v", preimage)
 		}
+	}
+}
+
+func TestRestoredHostTimeoutLeaseOwnsExactPreimage(t *testing.T) {
+	if lease := restoredHostTimeoutLeaseFromContext(context.Background()); lease != nil {
+		t.Fatal("plain context unexpectedly contains a restored host timeout lease")
+	}
+	ctx, lease := withRestoredHostTimeoutLease(context.Background())
+	if got := restoredHostTimeoutLeaseFromContext(ctx); got != lease {
+		t.Fatal("context did not retain the exact restored host timeout lease")
+	}
+	if _, active := lease.current(); active {
+		t.Fatal("new restored host timeout lease is active")
+	}
+	preimage := restoredHostTimeoutPreimage{Value: "0", Present: true}
+	if err := lease.bind(preimage); err != nil {
+		t.Fatalf("bind exact preimage: %v", err)
+	}
+	got, active := lease.current()
+	if !active || got != preimage {
+		t.Fatalf("active lease=%t preimage=%#v, want %#v", active, got, preimage)
+	}
+	if err := lease.bind(restoredHostTimeoutPreimage{}); err == nil {
+		t.Fatal("active lease accepted a second preimage")
+	}
+	lease.clear()
+	if _, active = lease.current(); active {
+		t.Fatal("cleared restored host timeout lease remained active")
+	}
+	if err := lease.bind(restoredHostTimeoutPreimage{}); err != nil {
+		t.Fatalf("rebind after exact cleanup: %v", err)
 	}
 }

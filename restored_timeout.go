@@ -18,6 +18,53 @@ type restoredHostTimeoutPreimage struct {
 	Present bool
 }
 
+type restoredHostTimeoutLeaseKey struct{}
+
+type restoredHostTimeoutLease struct {
+	preimage restoredHostTimeoutPreimage
+	active   bool
+}
+
+func withRestoredHostTimeoutLease(ctx context.Context) (context.Context, *restoredHostTimeoutLease) {
+	lease := &restoredHostTimeoutLease{}
+	return context.WithValue(ctx, restoredHostTimeoutLeaseKey{}, lease), lease
+}
+
+func restoredHostTimeoutLeaseFromContext(ctx context.Context) *restoredHostTimeoutLease {
+	lease, _ := ctx.Value(restoredHostTimeoutLeaseKey{}).(*restoredHostTimeoutLease)
+	return lease
+}
+
+func (lease *restoredHostTimeoutLease) bind(preimage restoredHostTimeoutPreimage) error {
+	if lease == nil {
+		return errors.New("nil restored host timeout lease")
+	}
+	if lease.active {
+		return errors.New("restored host timeout lease is already active")
+	}
+	if err := preimage.validate(); err != nil {
+		return err
+	}
+	lease.preimage = preimage
+	lease.active = true
+	return nil
+}
+
+func (lease *restoredHostTimeoutLease) current() (restoredHostTimeoutPreimage, bool) {
+	if lease == nil || !lease.active {
+		return restoredHostTimeoutPreimage{}, false
+	}
+	return lease.preimage, true
+}
+
+func (lease *restoredHostTimeoutLease) clear() {
+	if lease == nil {
+		return
+	}
+	lease.preimage = restoredHostTimeoutPreimage{}
+	lease.active = false
+}
+
 func restoredHostTimeoutSetCommand() string {
 	return fmt.Sprintf("/usr/sbin/nvram %s=%d", restoredHostTimeoutKey, restoredHostStartTimeoutSeconds)
 }

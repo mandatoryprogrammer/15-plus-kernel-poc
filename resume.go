@@ -57,7 +57,7 @@ func serialStartSSH(ctx context.Context, c *cache) error {
 		if timeoutErr != nil {
 			return timeoutErr
 		}
-		fmt.Fprintf(c.out, "Temporary restored host start timeout: preimage=%s postimage=%d inverse=restore-after-authenticated-SSH\n", timeoutPreimage.description(), restoredHostStartTimeoutSeconds)
+		fmt.Fprintf(c.out, "Temporary restored host start timeout: preimage=%s postimage=%d inverse=restore-after-command-or-bounded-operation\n", timeoutPreimage.description(), restoredHostStartTimeoutSeconds)
 		defer func() {
 			if err == nil {
 				return

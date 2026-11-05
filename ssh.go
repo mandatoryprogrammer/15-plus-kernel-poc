@@ -377,11 +377,60 @@ func sshSessionResult(ctx context.Context, sessionErr error) error {
 	return sessionErr
 }
 
+func readRestoredHostTimeoutOverSSH(ctx context.Context, access sshAccess) (string, bool, error) {
+	var listing bytes.Buffer
+	if err := runSSH(ctx, access, false, []string{"/usr/sbin/nvram", "-p"}, nil, &listing, os.Stderr); err != nil {
+		return "", false, fmt.Errorf("read temporary restored host timeout: %w", err)
+	}
+	return nvramListingValue(listing.Bytes(), restoredHostTimeoutKey)
+}
+
+func restoreRestoredHostTimeoutOverSSH(ctx context.Context, access sshAccess, preimage restoredHostTimeoutPreimage) error {
+	command, err := preimage.restoreCommand()
+	if err != nil {
+		return err
+	}
+	if err = runSSH(ctx, access, false, []string{"/bin/bash", "-c", command}, nil, io.Discard, os.Stderr); err != nil {
+		return fmt.Errorf("restore temporary restored host timeout: %w", err)
+	}
+	value, present, err := readRestoredHostTimeoutOverSSH(ctx, access)
+	if err != nil {
+		return err
+	}
+	if !preimage.matches(value, present) {
+		return fmt.Errorf("temporary restored host timeout inverse=%q present=%t, want %q", value, present, preimage.description())
+	}
+	return nil
+}
+
+func restoreRestoredHostTimeoutLease(c *cache, lease *restoredHostTimeoutLease) error {
+	preimage, active := lease.current()
+	if !active {
+		return nil
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	err := withDeviceLock(c, func() error {
+		access, loadErr := loadAccess(cleanupCtx, c)
+		if loadErr != nil {
+			return loadErr
+		}
+		return restoreRestoredHostTimeoutOverSSH(cleanupCtx, access, preimage)
+	})
+	if err != nil {
+		return err
+	}
+	lease.clear()
+	fmt.Fprintf(c.out, "Temporary restored host start timeout inverse verified %s after bounded payload operation\n", preimage.description())
+	return nil
+}
+
 func connectSSH(ctx context.Context, c *cache, terminal bool, command []string, wait bool, timeoutPreimage *restoredHostTimeoutPreimage) error {
 	access, err := loadAccess(ctx, c)
 	if err != nil {
 		return err
 	}
+	var restoreAfterCommand *restoredHostTimeoutPreimage
 	if wait {
 		if timeoutPreimage == nil {
 			return errors.New("authenticated SSH wait has no restored host timeout preimage")
@@ -401,37 +450,47 @@ func connectSSH(ctx context.Context, c *cache, terminal bool, command []string, 
 		if err != nil {
 			return err
 		}
-		restoreCommand, restoreErr := timeoutPreimage.restoreCommand()
-		if restoreErr != nil {
-			return restoreErr
-		}
-		cleanup := []string{"/bin/bash", "-c", `/usr/sbin/nvram auto-boot=false; /usr/sbin/nvram -d restore-outcome 2>/dev/null || true; ` + restoreCommand}
+		cleanup := []string{"/bin/bash", "-c", `/usr/sbin/nvram auto-boot=false; /usr/sbin/nvram -d restore-outcome 2>/dev/null || true`}
 		cleanupCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		err = runSSH(cleanupCtx, access, false, cleanup, nil, io.Discard, os.Stderr)
 		cancel()
 		if err != nil {
-			return fmt.Errorf("restore temporary NVRAM state: %w", err)
+			return fmt.Errorf("apply authenticated SSH NVRAM cleanup: %w", err)
 		}
-		var nvramListing bytes.Buffer
-		readbackCtx, readbackCancel := context.WithTimeout(ctx, 8*time.Second)
-		err = runSSH(readbackCtx, access, false, []string{"/usr/sbin/nvram", "-p"}, nil, &nvramListing, os.Stderr)
-		readbackCancel()
-		if err != nil {
-			return fmt.Errorf("read temporary NVRAM inverse: %w", err)
+		if lease := restoredHostTimeoutLeaseFromContext(ctx); lease != nil {
+			if err = lease.bind(*timeoutPreimage); err != nil {
+				return err
+			}
+			readbackCtx, readbackCancel := context.WithTimeout(ctx, 8*time.Second)
+			value, present, readbackErr := readRestoredHostTimeoutOverSSH(readbackCtx, access)
+			readbackCancel()
+			want := fmt.Sprint(restoredHostStartTimeoutSeconds)
+			if readbackErr != nil || !present || value != want {
+				lease.clear()
+				if readbackErr != nil {
+					return fmt.Errorf("read retained restored host timeout: %w", readbackErr)
+				}
+				return fmt.Errorf("retained restored host timeout=%q present=%t, want %q", value, present, want)
+			}
+			fmt.Fprintf(c.out, "Temporary restored host start timeout retained at %d through bounded payload operation; inverse=%s\n", restoredHostStartTimeoutSeconds, timeoutPreimage.description())
+		} else {
+			preimage := *timeoutPreimage
+			restoreAfterCommand = &preimage
 		}
-		value, present, parseErr := nvramListingValue(nvramListing.Bytes(), restoredHostTimeoutKey)
-		if parseErr != nil {
-			return fmt.Errorf("read temporary restored host timeout inverse: %w", parseErr)
-		}
-		if !timeoutPreimage.matches(value, present) {
-			return fmt.Errorf("temporary restored host timeout inverse=%q present=%t, want %q", value, present, timeoutPreimage.description())
-		}
-		fmt.Fprintf(c.out, "Temporary restored host start timeout inverse verified %s\n", timeoutPreimage.description())
 	}
 	if terminal {
 		fmt.Fprintln(c.out, "Opening the phone's shell. Type exit to close; the USB connection will be released.")
 	}
 	err = runSSH(ctx, access, terminal, command, os.Stdin, os.Stdout, os.Stderr)
+	if restoreAfterCommand != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		cleanupErr := restoreRestoredHostTimeoutOverSSH(cleanupCtx, access, *restoreAfterCommand)
+		cancel()
+		if cleanupErr == nil {
+			fmt.Fprintf(c.out, "Temporary restored host start timeout inverse verified %s after SSH command\n", restoreAfterCommand.description())
+		}
+		err = errors.Join(err, cleanupErr)
+	}
 	fmt.Fprintln(c.out, "SSH closed; USB connections released.")
 	return err
 }

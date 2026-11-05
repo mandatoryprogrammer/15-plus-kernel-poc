@@ -455,10 +455,19 @@ func runPayload(ctx context.Context, c *cache, args []string) (runErr error) {
 			runErr = errors.Join(runErr, fmt.Errorf("write latest payload run report: %w", reportErr))
 		}
 	}()
+	ctx, timeoutLease := withRestoredHostTimeoutLease(ctx)
+	defer func() {
+		if cleanupErr := restoreRestoredHostTimeoutLease(c, timeoutLease); cleanupErr != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("restore bounded payload host timeout: %w", cleanupErr))
+		}
+	}()
 	matching := runningAdmissionMatches(ctx, c, fingerprint)
 	report.EnvironmentReused = matching
 	if !matching && probeSSH(ctx, c) == nil {
 		fmt.Fprintln(c.out, "Running environment has a different admission set; restarting to apply the new trust plan")
+		if err = restoreRestoredHostTimeoutLease(c, timeoutLease); err != nil {
+			return err
+		}
 		if err = retryAdmissionReset(c.out, func() error { return resetToRecovery(ctx, c) }); err != nil {
 			return err
 		}
@@ -478,6 +487,9 @@ func runPayload(ctx context.Context, c *cache, args []string) (runErr error) {
 	}
 	if missing != "" {
 		fmt.Fprintf(c.out, "Payload destination %s is not an executable pre-created slot; restarting once to materialize the current payload plan\n", missing)
+		if err = restoreRestoredHostTimeoutLease(c, timeoutLease); err != nil {
+			return err
+		}
 		if err = retryAdmissionReset(c.out, func() error { return resetToRecovery(ctx, c) }); err != nil {
 			return err
 		}
