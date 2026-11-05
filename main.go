@@ -18,7 +18,7 @@ func main() {
 	payloadRun := len(os.Args) > 2 && os.Args[1] == "payload" && os.Args[2] == "run"
 	uiDeviceOperation := len(os.Args) > 2 && os.Args[1] == "ui" &&
 		(os.Args[2] == "run" || os.Args[2] == "capture" || os.Args[2] == "tap")
-	if len(os.Args) > 1 && (os.Args[1] == "shell" || os.Args[1] == "exec" || os.Args[1] == "serial-exec" || os.Args[1] == "serial-start-ssh" || os.Args[1] == "doctor" || os.Args[1] == "reset" || payloadRun || uiDeviceOperation) {
+	if len(os.Args) > 1 && (os.Args[1] == "shell" || os.Args[1] == "exec" || os.Args[1] == "pull" || os.Args[1] == "serial-exec" || os.Args[1] == "serial-start-ssh" || os.Args[1] == "doctor" || os.Args[1] == "reset" || payloadRun || uiDeviceOperation) {
 		debug := os.Getenv("GODEBUG")
 		if !strings.HasSuffix(debug, "asyncpreemptoff=1") {
 			exe, err := os.Executable()
@@ -42,7 +42,7 @@ func main() {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: 15-plus-kernel-poc shell | exec -- COMMAND | ui import DIRECTORY | ui status | ui run | payload run FILE | system-trust import FILE | cache gc | doctor | reset")
+		return errors.New("usage: 15-plus-kernel-poc shell | exec -- COMMAND | pull REMOTE LOCAL | ui import DIRECTORY | ui status | ui run | payload run FILE | system-trust import FILE | cache gc | doctor | reset")
 	}
 	root, err := projectRoot()
 	if err != nil {
@@ -75,6 +75,11 @@ func run(ctx context.Context, args []string) error {
 			return errors.New("usage: exec -- COMMAND [ARG...]")
 		}
 		return smartExec(ctx, cache, args[2:])
+	case "pull":
+		if len(args) != 3 {
+			return errors.New("usage: pull REMOTE ABSOLUTE_LOCAL")
+		}
+		return smartPull(ctx, cache, args[1], args[2])
 	case "iboot":
 		return ibootCommand(args[1:], os.Stdout, os.Stderr)
 	case "serial-exec":

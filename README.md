@@ -55,6 +55,7 @@ go build -mod=vendor -o 15-plus-kernel-poc .
 | --- | --- |
 | `go run . shell` | Reconnect, boot from Recovery, or reset to Recovery and boot as needed, then open a terminal. |
 | `go run . exec -- uname -a` | Reconnect or boot as needed, then run one argument-safe command through SSH. |
+| `go run . pull /remote/file /absolute/local/file` | Reconnect or boot as needed, read a remote file twice over authenticated SSH, require identical size and SHA-256, and atomically create an absent local destination without replacing a preimage. |
 | `go run . payload list` | List the base payload and user additions separately. |
 | `go run . payload add FILE` | Add a compatible executable as `/usr/local/bin/FILE`. |
 | `go run . payload add FILE --dest /usr/local/bin/NAME` | Select its destination. |
