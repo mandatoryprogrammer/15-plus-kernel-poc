@@ -354,7 +354,11 @@ func runSSH(ctx context.Context, access sshAccess, terminal bool, command []stri
 	go func() { done <- session.Wait() }()
 	select {
 	case err = <-done:
-		return err
+		// A context deadline and the remote process exit can become observable in
+		// the same scheduler turn. Prefer the owned context terminal so callers do
+		// not misclassify a deadline-induced SIGKILL (usually SSH status 137) as an
+		// unrelated target failure and skip required cleanup.
+		return sshSessionResult(ctx, err)
 	case <-ctx.Done():
 		_ = session.Signal(ssh.SIGTERM)
 		client.Close()
@@ -364,6 +368,13 @@ func runSSH(ctx context.Context, access sshAccess, terminal bool, command []stri
 		}
 		return ctx.Err()
 	}
+}
+
+func sshSessionResult(ctx context.Context, sessionErr error) error {
+	if contextErr := ctx.Err(); contextErr != nil {
+		return contextErr
+	}
+	return sessionErr
 }
 
 func connectSSH(ctx context.Context, c *cache, terminal bool, command []string, wait bool) error {

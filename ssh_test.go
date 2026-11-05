@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"testing"
+	"time"
 )
 
 func TestSSHCommandQuotesEveryArgument(t *testing.T) {
@@ -11,6 +13,25 @@ func TestSSHCommandQuotesEveryArgument(t *testing.T) {
 	want := "'printf' '%s' 'a'\"'\"'$(anything); `command`'"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestSSHSessionResultPrefersOwnedContextTerminal(t *testing.T) {
+	sessionErr := errors.New("remote process exited with signal KILL")
+	if got := sshSessionResult(context.Background(), sessionErr); !errors.Is(got, sessionErr) {
+		t.Fatalf("live context result=%v, want session error", got)
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := sshSessionResult(cancelled, sessionErr); !errors.Is(got, context.Canceled) {
+		t.Fatalf("cancelled context result=%v, want context canceled", got)
+	}
+
+	deadline, stop := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer stop()
+	if got := sshSessionResult(deadline, sessionErr); !errors.Is(got, context.DeadlineExceeded) {
+		t.Fatalf("expired context result=%v, want deadline exceeded", got)
 	}
 }
 

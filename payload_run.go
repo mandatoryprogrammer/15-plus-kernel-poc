@@ -315,7 +315,7 @@ func runPreparedPayload(ctx context.Context, c *cache, main payloadEntry, includ
 		}
 		defer executionCancel()
 		executionErr := runSSH(executionCtx, access, false, command, os.Stdin, targetOutput, targetError)
-		if executionCtx.Err() == context.DeadlineExceeded {
+		if executionCtx.Err() == context.DeadlineExceeded || errors.Is(executionErr, context.DeadlineExceeded) {
 			return fmt.Errorf("%w after %s: %v", errPayloadExecutionTimeout, payloadExecutionTimeout(ctx), executionErr)
 		}
 		return executionErr
