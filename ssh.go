@@ -405,6 +405,21 @@ func connectSSH(ctx context.Context, c *cache, terminal bool, command []string, 
 		if err != nil {
 			return fmt.Errorf("restore temporary NVRAM state: %w", err)
 		}
+		var nvramListing bytes.Buffer
+		readbackCtx, readbackCancel := context.WithTimeout(ctx, 8*time.Second)
+		err = runSSH(readbackCtx, access, false, []string{"/usr/sbin/nvram", "-p"}, nil, &nvramListing, os.Stderr)
+		readbackCancel()
+		if err != nil {
+			return fmt.Errorf("read temporary NVRAM inverse: %w", err)
+		}
+		value, present, parseErr := nvramListingValue(nvramListing.Bytes(), restoredHostTimeoutKey)
+		if parseErr != nil {
+			return fmt.Errorf("read temporary restored host timeout inverse: %w", parseErr)
+		}
+		if present {
+			return fmt.Errorf("temporary restored host timeout inverse retained %q", value)
+		}
+		fmt.Fprintln(c.out, "Temporary restored host start timeout inverse verified absent")
 	}
 	if terminal {
 		fmt.Fprintln(c.out, "Opening the phone's shell. Type exit to close; the USB connection will be released.")

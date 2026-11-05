@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -52,19 +53,18 @@ func serialStartSSH(ctx context.Context, c *cache) error {
 		if err = installSSHAccess(ctx, c, serial, access); err != nil {
 			return err
 		}
-		if response, nvramErr := rootExec(ctx, serial, "/usr/sbin/nvram restored-host-timeout=0"); nvramErr != nil {
-			return fmt.Errorf("set temporary USB-service deadline: %w: %s", nvramErr, response)
+		if err = setTemporaryRestoredHostTimeout(ctx, serial); err != nil {
+			return err
 		}
+		fmt.Fprintf(c.out, "Temporary restored host start timeout: preimage=absent postimage=%d inverse=delete-after-authenticated-SSH\n", restoredHostStartTimeoutSeconds)
 		defer func() {
 			if err == nil {
 				return
 			}
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_, cleanupErr := rootExec(cleanupCtx, serial, "/bin/bash -c '/usr/sbin/nvram -d restored-host-timeout 2>/dev/null || true'")
-			if cleanupErr != nil {
-				err = fmt.Errorf("%w; clear temporary USB-service deadline: %v", err, cleanupErr)
-			}
+			cleanupErr := clearTemporaryRestoredHostTimeout(cleanupCtx, serial)
+			err = errors.Join(err, cleanupErr)
 		}()
 		launch := `/bin/bash -c '/usr/local/bin/restored_external >/dev/console 2>&1 </dev/null & /usr/local/sbin/sshd -t -f /private/etc/ssh/sshd_config -h /private/etc/ssh/ssh_host_ed25519_key && /usr/local/sbin/sshd -f /private/etc/ssh/sshd_config -h /private/etc/ssh/ssh_host_ed25519_key'`
 		response, err := rootExec(ctx, serial, launch)
