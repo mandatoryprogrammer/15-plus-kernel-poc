@@ -18,6 +18,9 @@ The tests cover:
 - Device identity, Image4 policies, loader and kernel patches, access-port discovery, probe transfer sizes, and UART selection.
 - Root-field discovery, trust-cache formats 0 through 2, payload checks, Mach-O signing, and image capacity.
 - State changes, timeouts, cancellation, locking, serial records, SSH arguments, and cleanup.
+- Standalone iBoot analysis, sidecar auto-discovery, semantic patch derivation,
+  exact inverse/readback, JSON evidence, no-clobber output, and rejection of
+  malformed, ambiguous, mismatched, or already-patched inputs.
 
 Device operations run no host command-line utility.
 
@@ -30,6 +33,32 @@ Device operations run no host command-line utility.
 | `iBoot-8737.0.0.101.5` | Checked adapter | XNU, authenticated SSH, command pack, clean exit. |
 | `iBoot-9275.0.0.101.2` | ARM64 analysis | 17 RAM writes, stage `0x25` to `0x24`, XNU, authenticated SSH, storage discovery, command pack, clean exit. |
 | `iBoot-9275.0.0.101.11` | ARM64 analysis | 17 RAM writes, stage `0x25` to `0x24`, XNU, authenticated SSH, storage discovery, command pack, clean exit. |
+
+## Standalone iBoot patcher matrix
+
+On 2026-11-04, the standalone `iboot` command completed
+analyze→patch→verify round trips against six retained live-memory captures.
+Every output was re-derived from its original input, read back from the ExFAT
+NVMe, compared byte for byte, and inverted exactly. Test outputs were removed
+after reduction.
+
+| Build | Capture | Selection | Guards | Patches | Changed bytes | Result |
+| --- | --- | --- | ---: | ---: | ---: | --- |
+| `iBoot-8737.0.0.101.5` | 256 KiB at `+0x20000` | Checked adapter | 5 | 16 | 44 | Exact |
+| `iBoot-9275.0.0.101.2` | 1.25 MiB at `+0x20000` | ARM64 analysis | 60 | 17 | 48 | Exact |
+| `iBoot-9275.0.0.101.2` | 1.5 MiB at `+0x0` | ARM64 analysis | 60 | 17 | 48 | Exact |
+| `iBoot-9275.0.0.101.11` | 1.25 MiB at `+0x20000` | ARM64 analysis | 60 | 17 | 48 | Exact |
+| `iBoot-9275.0.0.101.11` | 2.5 MiB at `+0x0` | ARM64 analysis | 60 | 17 | 48 | Exact |
+| `iBoot-9275.0.0.101.11` | fresh 1.5 MiB live capture at `+0x0` | ARM64 analysis | 60 | 17 | 48 | Exact |
+
+The fresh `.101.11` physical run then applied and read back the same 17 writes
+in live iBoot RAM, synchronized caches, moved Recovery from stage `0x25` to
+`0x24`, loaded the runtime, selected the temporary root, and reached its root
+service. The clean public repository subsequently stopped at its separately
+known roleless-APFS parser boundary. `reset` returned the board to stage
+`0x25`; post-run `doctor` verified Recovery, the exact CPFM00 board, probe, and
+UART. Thus the iBoot transaction and its downstream execution were physically
+qualified, while this run does not claim a new storage or SSH result.
 
 On 2026-10-14, `./15-plus-kernel-poc shell` booted both 9275 builds. The `.101.2` phone was a separate variant with its own loader snapshot. The analyzer needed no build adapter or source change.
 

@@ -124,6 +124,10 @@ func TestLoaderBuildAndKnownAdapterSelection(t *testing.T) {
 	if err != nil || build != "iBoot-9275.0.0.101.12" {
 		t.Fatalf("build=%q err=%v", build, err)
 	}
+	duplicate := append(header, []byte("iBoot-9275.0.0.101.12\x00")...)
+	if build, err = loaderBuild(duplicate, ""); err != nil || build != "iBoot-9275.0.0.101.12" {
+		t.Fatalf("duplicate identical build=%q err=%v", build, err)
+	}
 	multiple := append(header, []byte("iBoot-second\x00")...)
 	if _, err = loaderBuild(multiple, ""); err == nil {
 		t.Fatal("multiple build strings accepted")

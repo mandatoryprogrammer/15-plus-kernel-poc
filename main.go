@@ -39,7 +39,7 @@ func main() {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: 15-plus-kernel-poc shell | exec -- COMMAND | payload list | payload add FILE [--dest /usr/local/bin/NAME] | assets fetch | assets import bootstrap DIRECTORY | doctor | reset")
+		return errors.New("usage: 15-plus-kernel-poc shell | exec -- COMMAND | iboot analyze SNAPSHOT | iboot patch SNAPSHOT | iboot verify ORIGINAL PATCHED | payload list | payload add FILE [--dest /usr/local/bin/NAME] | assets fetch | assets import bootstrap DIRECTORY | doctor | reset")
 	}
 	root, err := projectRoot()
 	if err != nil {
@@ -72,6 +72,8 @@ func run(ctx context.Context, args []string) error {
 			return errors.New("usage: exec -- COMMAND [ARG...]")
 		}
 		return smartExec(ctx, cache, args[2:])
+	case "iboot":
+		return ibootCommand(args[1:], os.Stdout, os.Stderr)
 	case "assets":
 		return assetsCommand(ctx, cache, args[1:])
 	case "payload":

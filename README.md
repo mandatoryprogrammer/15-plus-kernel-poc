@@ -137,6 +137,42 @@ sequenceDiagram
     K-->>CLI: Authenticated root terminal
 ```
 
+## Standalone generic iBoot patcher
+
+The same semantic analyzer used by the live boot path is available as an
+offline, fail-closed tool for decoded iBoot executable snapshots. It derives
+the admission checks from ARM64 instruction relationships; it does not select
+patches from a build number, fixed address, or input hash.
+
+```sh
+# Review the complete transaction without writing anything.
+./15-plus-kernel-poc iboot analyze loader.bin
+
+# Write loader.bin.patched and verify it by exact readback.
+./15-plus-kernel-poc iboot patch loader.bin
+
+# Independently re-derive the transaction and compare every output byte.
+./15-plus-kernel-poc iboot verify loader.bin loader.bin.patched
+```
+
+Snapshots produced by this repository already have an adjacent `.txt`
+sidecar containing their build, live base, capture offset, size, and SHA-256;
+the commands consume and verify it automatically. For another decoded image,
+the build string and zero-based geometry are normally discovered without
+options. Partial captures can use `--build`, `--base`, and `--offset`. Flags
+may appear before or after filenames. `--json` prints a stable machine report,
+and `--report FILE` writes one atomically. `iboot patch` never changes its
+source and refuses to replace an output unless `--force` is supplied.
+
+The patcher normally requires the complete supported control-flow neighborhood
+and one authenticated signature-result continuation. It also supports the
+older hardware-qualified adapter used by the live path, but only when every
+stored guard and patch preimage is present and exact. Missing, duplicated,
+ambiguous, already-patched, or changed instruction sequences stop before
+output creation.
+An IMG4 or IM4P must first be decoded to its raw executable payload; the tool
+rejects containers explicitly rather than treating their offsets as code.
+
 ## Boot checks and patches
 
 The CLI builds file changes in host memory and uploads them for one boot. It does not modify cached source objects or internal phone volumes.

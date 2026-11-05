@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -252,6 +253,69 @@ func (a *initialLoaderAdapter) plan(ctx context.Context, d *targetDebug, base ui
 		plan.patches = append(plan.patches, codePatch{base + patch.offset, patch.before, patch.after})
 	}
 	return plan, validateLoaderPlan(plan)
+}
+
+// offlinePlan applies a stored hardware-qualified adapter to a decoded
+// snapshot. Every guard and patch preimage must be present in the capture;
+// entry/build bytes are also checked when that part of the image is present.
+// The semantic analyzer remains the preferred path for unfamiliar loaders.
+func (a *initialLoaderAdapter) offlinePlan(image []byte, imageOffset, base uint64) (loaderPlan, error) {
+	if len(image) < 4 || imageOffset%4 != 0 || base%0x1000 != 0 {
+		return loaderPlan{}, errors.New("invalid checked-adapter snapshot geometry")
+	}
+	local := func(offset uint64, width int) (int, bool) {
+		if offset < imageOffset || uint64(width) > uint64(len(image)) || offset-imageOffset > uint64(len(image)-width) {
+			return 0, false
+		}
+		return int(offset - imageOffset), true
+	}
+	if at, present := local(0, len(a.entry)/2); present {
+		entry, err := hex.DecodeString(a.entry)
+		if err != nil || !bytes.Equal(image[at:at+len(entry)], entry) {
+			return loaderPlan{}, errors.New("checked-adapter entry bytes changed")
+		}
+	}
+	if at, present := local(a.buildOffset, len(a.buildBytes)/2); present {
+		build, err := hex.DecodeString(a.buildBytes)
+		if err != nil || !bytes.Equal(image[at:at+len(build)], build) {
+			return loaderPlan{}, errors.New("checked-adapter build bytes changed")
+		}
+	}
+	plan := loaderPlan{
+		build: a.build, source: "stored checked adapter", base: base,
+		extent: imageOffset + uint64(len(image)), expectedPatches: len(a.patches), snapshotSHA256: digest(image),
+	}
+	for _, guard := range a.guards {
+		at, present := local(guard.offset, 4)
+		if !present || binary.LittleEndian.Uint32(image[at:]) != guard.value {
+			return loaderPlan{}, fmt.Errorf("checked-adapter guard changed or absent at +0x%x", guard.offset)
+		}
+		plan.guards = append(plan.guards, codeGuard{address: base + guard.offset, value: normalizeARM64(guard.value), mask: ^uint32(0)})
+	}
+	for _, patch := range a.patches {
+		at, present := local(patch.offset, 4)
+		if !present || binary.LittleEndian.Uint32(image[at:]) != patch.before {
+			return loaderPlan{}, fmt.Errorf("checked-adapter patch preimage changed or absent at +0x%x", patch.offset)
+		}
+		plan.patches = append(plan.patches, codePatch{address: base + patch.offset, before: patch.before, after: patch.after})
+	}
+	return plan, validateLoaderPlan(plan)
+}
+
+func analyzeOfflineInitialLoader(image []byte, imageOffset, base uint64, build string) (loaderPlan, error) {
+	semantic, semanticErr := analyzeInitialLoader(image, imageOffset, base, build)
+	if semanticErr == nil {
+		return semantic, nil
+	}
+	adapter := knownInitialLoader(build)
+	if adapter == nil {
+		return loaderPlan{}, semanticErr
+	}
+	checked, adapterErr := adapter.offlinePlan(image, imageOffset, base)
+	if adapterErr != nil {
+		return loaderPlan{}, errors.Join(semanticErr, adapterErr)
+	}
+	return checked, nil
 }
 
 func normalizeARM64(word uint32) uint32 {
@@ -517,6 +581,7 @@ func validateLoaderPlan(plan loaderPlan) error {
 func loaderBuild(header []byte, expected string) (string, error) {
 	const prefix = "iBoot-"
 	var builds []string
+	seen := make(map[string]bool)
 	for cursor := 0; cursor < len(header); {
 		relative := bytes.Index(header[cursor:], []byte(prefix))
 		if relative < 0 {
@@ -531,7 +596,11 @@ func loaderBuild(header []byte, expected string) (string, error) {
 			}
 			end++
 		}
-		builds = append(builds, string(header[start:end]))
+		build := string(header[start:end])
+		if build != prefix && !seen[build] {
+			builds = append(builds, build)
+			seen[build] = true
+		}
 		cursor = end
 	}
 	if expected != "" {
