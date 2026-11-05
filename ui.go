@@ -263,6 +263,12 @@ func uiCommand(ctx context.Context, c *cache, args []string) error {
 	if len(args) >= 1 && args[0] == "run" {
 		return runUI(ctx, c, args[1:])
 	}
+	if len(args) == 1 && args[0] == "capture" {
+		return captureUIFrame(ctx, c)
+	}
+	if len(args) >= 1 && args[0] == "tap" {
+		return tapUIFrame(ctx, c, args[1:])
+	}
 	if len(args) == 1 && args[0] == "status" {
 		profile, err := loadUIProfile(ctx, c)
 		if err != nil {
@@ -275,5 +281,5 @@ func uiCommand(ctx context.Context, c *cache, args []string) error {
 		}
 		return nil
 	}
-	return errors.New("usage: ui import DIRECTORY | ui launcher import FILE | ui status | ui run [-- MONKEYBARS-ARG...]")
+	return errors.New("usage: ui import DIRECTORY | ui launcher import FILE | ui status | ui run [-- MONKEYBARS-ARG...] | ui capture | ui tap X Y")
 }

@@ -16,8 +16,9 @@ func main() {
 	// asynchronous preemption signal interrupts their Mach wait. Relaunch once
 	// with that signal disabled; cooperative scheduling remains enabled.
 	payloadRun := len(os.Args) > 2 && os.Args[1] == "payload" && os.Args[2] == "run"
-	uiRun := len(os.Args) > 2 && os.Args[1] == "ui" && os.Args[2] == "run"
-	if len(os.Args) > 1 && (os.Args[1] == "shell" || os.Args[1] == "exec" || os.Args[1] == "serial-exec" || os.Args[1] == "serial-start-ssh" || os.Args[1] == "doctor" || os.Args[1] == "reset" || payloadRun || uiRun) {
+	uiDeviceOperation := len(os.Args) > 2 && os.Args[1] == "ui" &&
+		(os.Args[2] == "run" || os.Args[2] == "capture" || os.Args[2] == "tap")
+	if len(os.Args) > 1 && (os.Args[1] == "shell" || os.Args[1] == "exec" || os.Args[1] == "serial-exec" || os.Args[1] == "serial-start-ssh" || os.Args[1] == "doctor" || os.Args[1] == "reset" || payloadRun || uiDeviceOperation) {
 		debug := os.Getenv("GODEBUG")
 		if !strings.HasSuffix(debug, "asyncpreemptoff=1") {
 			exe, err := os.Executable()
