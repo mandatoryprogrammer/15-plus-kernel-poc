@@ -50,6 +50,8 @@ type serviceChainReport struct {
 	ProgramReached    bool      `json:"program_reached"`
 	ExecutionTimeout  string    `json:"execution_timeout"`
 	ExecutionTimedOut bool      `json:"execution_timed_out"`
+	ExecutionKilled   bool      `json:"execution_killed"`
+	ExecutionTerminal string    `json:"execution_terminal,omitempty"`
 	RecoveryCleanup   string    `json:"recovery_cleanup,omitempty"`
 	Markers           []string  `json:"markers,omitempty"`
 	OutputTruncated   bool      `json:"output_truncated,omitempty"`
@@ -295,7 +297,13 @@ func runServiceChain(ctx context.Context, c *cache, manifestPath string, program
 	report.ChainReady = markerContains(report.Markers, "PRODUCT_SERVICE_CHAIN stage=ready")
 	report.ProgramReached = markerContains(report.Markers, "CHROOT_UI_DIRFD_TRANSITION stage=exec")
 	report.ExecutionTimedOut = errors.Is(runErr, errPayloadExecutionTimeout)
+	report.ExecutionKilled = errors.Is(runErr, errPayloadExecutionKilled)
 	if report.ExecutionTimedOut {
+		report.ExecutionTerminal = "local-execution-deadline"
+	} else if report.ExecutionKilled {
+		report.ExecutionTerminal = "remote-signal-KILL-before-local-deadline"
+	}
+	if report.ExecutionTimedOut || report.ExecutionKilled {
 		cleanupErr := retryAdmissionReset(c.out, func() error { return resetToRecovery(ctx, c) })
 		if cleanupErr != nil {
 			report.RecoveryCleanup = "failed: " + cleanupErr.Error()

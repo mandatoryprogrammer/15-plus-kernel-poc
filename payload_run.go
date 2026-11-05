@@ -21,6 +21,7 @@ const (
 )
 
 var errPayloadExecutionTimeout = errors.New("target payload execution deadline exceeded")
+var errPayloadExecutionKilled = errors.New("target payload terminated by remote KILL")
 
 type payloadExecutionTimeoutKey struct{}
 
@@ -52,6 +53,14 @@ func payloadExecutionDeadlineReached(ctx context.Context, executionErr error, el
 	// deadline as that deadline; ordinary early target failures remain distinct.
 	const schedulerAllowance = 250 * time.Millisecond
 	return elapsed+schedulerAllowance >= timeout
+}
+
+func payloadExecutionWasKilled(executionErr error) bool {
+	if executionErr == nil {
+		return false
+	}
+	var signaled interface{ Signal() string }
+	return errors.As(executionErr, &signaled) && signaled.Signal() == "KILL"
 }
 
 type payloadExecutionProgress struct {
@@ -332,8 +341,12 @@ func runPreparedPayload(ctx context.Context, c *cache, main payloadEntry, includ
 		executionStarted := time.Now()
 		executionErr := runSSH(executionCtx, access, false, command, os.Stdin, targetOutput, targetError)
 		executionTimeout := payloadExecutionTimeout(ctx)
-		if payloadExecutionDeadlineReached(executionCtx, executionErr, time.Since(executionStarted), executionTimeout) {
+		executionElapsed := time.Since(executionStarted)
+		if payloadExecutionDeadlineReached(executionCtx, executionErr, executionElapsed, executionTimeout) {
 			return fmt.Errorf("%w after %s: %v", errPayloadExecutionTimeout, executionTimeout, executionErr)
+		}
+		if executionTimeout > 0 && payloadExecutionWasKilled(executionErr) {
+			return fmt.Errorf("%w after %s before the local %s deadline: %v", errPayloadExecutionKilled, executionElapsed.Round(time.Millisecond), executionTimeout, executionErr)
 		}
 		return executionErr
 	})

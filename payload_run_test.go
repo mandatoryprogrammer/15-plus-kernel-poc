@@ -75,6 +75,22 @@ func TestPayloadExecutionDeadlineClassificationHandlesSSHExitRace(t *testing.T) 
 	}
 }
 
+type signaledPayloadExit struct{ signal string }
+
+func (exit signaledPayloadExit) Error() string  { return "remote signal " + exit.signal }
+func (exit signaledPayloadExit) Signal() string { return exit.signal }
+
+func TestPayloadExecutionKilledClassificationIsStructured(t *testing.T) {
+	if !payloadExecutionWasKilled(signaledPayloadExit{signal: "KILL"}) {
+		t.Fatal("structured remote KILL was not classified")
+	}
+	for _, err := range []error{nil, signaledPayloadExit{signal: "TERM"}, errors.New("Process exited with status 137 from signal KILL")} {
+		if payloadExecutionWasKilled(err) {
+			t.Fatalf("non-structured or different terminal was classified as KILL: %v", err)
+		}
+	}
+}
+
 func TestPayloadRunPreparationAndAdmissionFingerprint(t *testing.T) {
 	root := t.TempDir()
 	c, err := newCache(root)
