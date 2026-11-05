@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	targetIndexSchema    = "15-plus-kernel-poc.target-index.v1"
+	targetIndexSchema    = "15-plus-kernel-poc.target-index.v2"
 	targetPlistReadLimit = 32 << 20
 )
 
@@ -56,6 +56,11 @@ type targetIndexedSymlink struct {
 	Target string `json:"target"`
 }
 
+type targetSkippedEntry struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
+}
+
 type targetIndex struct {
 	Schema            string                 `json:"schema"`
 	ProductVersion    string                 `json:"product_version"`
@@ -66,6 +71,7 @@ type targetIndex struct {
 	SharedCaches      []targetIndexedFile    `json:"shared_caches"`
 	StaticTrustCaches []targetTrustCache     `json:"static_trust_caches"`
 	Symlinks          []targetIndexedSymlink `json:"symlinks,omitempty"`
+	Skipped           []targetSkippedEntry   `json:"skipped,omitempty"`
 }
 
 type targetIndexArtifact struct {
@@ -257,6 +263,19 @@ func buildTargetIndexWithOutput(ctx context.Context, root string, out io.Writer)
 		if !validTargetRelativePath(relative) {
 			return fmt.Errorf("unsafe ProductOS path %q", relative)
 		}
+		if relative == ".file" {
+			fileInfo, infoErr := entry.Info()
+			if infoErr != nil {
+				return infoErr
+			}
+			if !fileInfo.Mode().IsRegular() || fileInfo.Size() != 0 || fileInfo.Mode().Perm() != 0 {
+				return errors.New("ProductOS root .file metadata entry has an unexpected identity")
+			}
+			index.Skipped = append(index.Skipped, targetSkippedEntry{
+				Path: relative, Reason: "apfs-root-filesystem-metadata",
+			})
+			return nil
+		}
 		mode := entry.Type()
 		if mode&os.ModeSymlink != 0 {
 			target, readErr := os.Readlink(name)
@@ -290,11 +309,8 @@ func buildTargetIndexWithOutput(ctx context.Context, root string, out io.Writer)
 		return targetIndex{}, err
 	}
 	index.ProductVersion, index.ProductBuild = version, build
-	if len(index.SharedCaches) == 0 || !containsTargetPathBase(index.SharedCaches, "dyld_shared_cache_arm64e") {
-		return targetIndex{}, errors.New("ProductOS root is missing dyld_shared_cache_arm64e")
-	}
-	if len(index.StaticTrustCaches) == 0 {
-		return targetIndex{}, errors.New("ProductOS root is missing StaticTrustCache")
+	if !containsTargetPath(index.Executables, "usr/lib/dyld") {
+		return targetIndex{}, errors.New("ProductOS root is missing executable usr/lib/dyld")
 	}
 	return index, nil
 }
@@ -440,11 +456,21 @@ func sortTargetIndex(index *targetIndex) {
 	sort.Slice(index.SharedCaches, func(i, j int) bool { return index.SharedCaches[i].Path < index.SharedCaches[j].Path })
 	sort.Slice(index.StaticTrustCaches, func(i, j int) bool { return index.StaticTrustCaches[i].Path < index.StaticTrustCaches[j].Path })
 	sort.Slice(index.Symlinks, func(i, j int) bool { return index.Symlinks[i].Path < index.Symlinks[j].Path })
+	sort.Slice(index.Skipped, func(i, j int) bool { return index.Skipped[i].Path < index.Skipped[j].Path })
 }
 
 func containsTargetPathBase(entries []targetIndexedFile, base string) bool {
 	for _, entry := range entries {
 		if filepath.Base(entry.Path) == base {
+			return true
+		}
+	}
+	return false
+}
+
+func containsTargetPath(entries []targetIndexedFile, name string) bool {
+	for _, entry := range entries {
+		if entry.Path == name {
 			return true
 		}
 	}

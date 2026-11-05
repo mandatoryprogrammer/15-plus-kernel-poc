@@ -41,7 +41,7 @@ func targetTestRoot(t *testing.T) string {
 	writeTargetTestFile(t, root, "System/Library/LaunchDaemons/com.example.display.plist", []byte(launchd), 0600)
 	writeTargetTestFile(t, root, "System/Library/dyld/dyld_shared_cache_arm64e", []byte("dyld_v1  arm64e\x00cache"), 0600)
 	writeTargetTestFile(t, root, "System/Library/dyld/dyld_shared_cache_arm64e.01", []byte("dyld_v1  arm64e\x00subcache"), 0600)
-	writeTargetTestFile(t, root, "usr/bin/example", append([]byte{0xcf, 0xfa, 0xed, 0xfe}, bytes.Repeat([]byte{0x41}, 32)...), 0755)
+	writeTargetTestFile(t, root, "usr/lib/dyld", append([]byte{0xcf, 0xfa, 0xed, 0xfe}, bytes.Repeat([]byte{0x41}, 32)...), 0755)
 	trust := trustImageWithRows("trst", 2, completeTrustRow(2, 0x22))
 	writeTargetTestFile(t, root, "private/var/db/StaticTrustCache", trust, 0600)
 	return root
@@ -111,6 +111,23 @@ func TestTargetIndexArtifactIsActualContentAddress(t *testing.T) {
 }
 
 func TestTargetIndexHandlesSymlinksWithoutFollowingAndRejectsMissingInputs(t *testing.T) {
+	t.Run("apfs-root-file-metadata", func(t *testing.T) {
+		root := targetTestRoot(t)
+		writeTargetTestFile(t, root, ".file", nil, 0000)
+		index, err := buildTargetIndex(context.Background(), root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(index.Skipped) != 1 || index.Skipped[0].Path != ".file" || index.Skipped[0].Reason != "apfs-root-filesystem-metadata" {
+			t.Fatalf("APFS metadata skip was not explicit: %+v", index.Skipped)
+		}
+		if err = os.Chmod(filepath.Join(root, ".file"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = buildTargetIndex(context.Background(), root); err == nil || !strings.Contains(err.Error(), "unexpected identity") {
+			t.Fatalf("accepted changed APFS metadata identity: %v", err)
+		}
+	})
 	t.Run("root-symlink", func(t *testing.T) {
 		root := targetTestRoot(t)
 		link := filepath.Join(t.TempDir(), "root")
@@ -124,24 +141,40 @@ func TestTargetIndexHandlesSymlinksWithoutFollowingAndRejectsMissingInputs(t *te
 	t.Run("interior-symlink", func(t *testing.T) {
 		root := targetTestRoot(t)
 		external := writeTargetTestFile(t, t.TempDir(), "external", append([]byte{0xcf, 0xfa, 0xed, 0xfe}, []byte("outside")...), 0755)
-		if err := os.Symlink(external, filepath.Join(root, "usr", "bin", "alias")); err != nil {
+		if err := os.Symlink(external, filepath.Join(root, "usr", "lib", "alias")); err != nil {
 			t.Fatal(err)
 		}
 		index, err := buildTargetIndex(context.Background(), root)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(index.Symlinks) != 1 || index.Symlinks[0].Path != "usr/bin/alias" || len(index.Executables) != 1 {
+		if len(index.Symlinks) != 1 || index.Symlinks[0].Path != "usr/lib/alias" || len(index.Executables) != 1 {
 			t.Fatalf("symlink was followed or not recorded: links=%+v executables=%+v", index.Symlinks, index.Executables)
 		}
 	})
-	t.Run("missing-base-cache", func(t *testing.T) {
+	t.Run("system-volume-without-materialized-runtime-caches", func(t *testing.T) {
 		root := targetTestRoot(t)
 		if err := os.Remove(filepath.Join(root, "System", "Library", "dyld", "dyld_shared_cache_arm64e")); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := buildTargetIndex(context.Background(), root); err == nil || !strings.Contains(err.Error(), "missing dyld_shared_cache_arm64e") {
-			t.Fatalf("accepted incomplete cache inventory: %v", err)
+		if err := os.Remove(filepath.Join(root, "System", "Library", "dyld", "dyld_shared_cache_arm64e.01")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(filepath.Join(root, "private", "var", "db", "StaticTrustCache")); err != nil {
+			t.Fatal(err)
+		}
+		index, err := buildTargetIndex(context.Background(), root)
+		if err != nil || len(index.SharedCaches) != 0 || len(index.StaticTrustCaches) != 0 {
+			t.Fatalf("did not inventory a valid System volume with external runtime caches: index=%+v err=%v", index, err)
+		}
+	})
+	t.Run("missing-dyld", func(t *testing.T) {
+		root := targetTestRoot(t)
+		if err := os.Remove(filepath.Join(root, "usr", "lib", "dyld")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := buildTargetIndex(context.Background(), root); err == nil || !strings.Contains(err.Error(), "missing executable usr/lib/dyld") {
+			t.Fatalf("accepted a non-ProductOS root: %v", err)
 		}
 	})
 }

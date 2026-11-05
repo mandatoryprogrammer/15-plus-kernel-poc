@@ -36,14 +36,16 @@ type runtimeQualifiedUI struct {
 }
 
 type runtimeQualifiedRoot struct {
-	IndexSHA256    string `json:"index_sha256"`
-	ProductVersion string `json:"product_version"`
-	ProductBuild   string `json:"product_build"`
-	Executables    int    `json:"executables"`
-	Plists         int    `json:"plists"`
-	MachServices   int    `json:"mach_services"`
-	SharedCaches   int    `json:"shared_caches"`
-	TrustCaches    int    `json:"static_trust_caches"`
+	IndexSHA256      string `json:"index_sha256"`
+	ProductVersion   string `json:"product_version"`
+	ProductBuild     string `json:"product_build"`
+	Executables      int    `json:"executables"`
+	Plists           int    `json:"plists"`
+	MachServices     int    `json:"mach_services"`
+	SharedCaches     int    `json:"shared_caches"`
+	TrustCaches      int    `json:"static_trust_caches"`
+	SharedCacheState string `json:"shared_cache_state"`
+	SystemTrustState string `json:"system_trust_state"`
 }
 
 type runtimeQualificationReport struct {
@@ -212,17 +214,26 @@ func qualifyRuntimeInto(ctx context.Context, c *cache, productRoot string, repor
 	if index.ProductVersion != canonicalRuntime.IOSVersion || index.ProductBuild != canonicalRuntime.OSBuild {
 		return fmt.Errorf("ProductOS root build %s/%s does not match runtime %s/%s", index.ProductVersion, index.ProductBuild, canonicalRuntime.IOSVersion, canonicalRuntime.OSBuild)
 	}
-	if !targetIndexTrustMatches(index, systemBody) {
+	if len(index.StaticTrustCaches) != 0 && !targetIndexTrustMatches(index, systemBody) {
 		return errors.New("ProductOS root StaticTrustCache does not match the configured complete system trust context")
 	}
 	artifact, err := storeTargetIndex(c, index)
 	if err != nil {
 		return fmt.Errorf("store ProductOS target index: %w", err)
 	}
+	sharedCacheState := "present-in-system-volume"
+	if len(index.SharedCaches) == 0 {
+		sharedCacheState = "external-to-system-volume"
+	}
+	systemTrustState := "matches-configured-complete-context"
+	if len(index.StaticTrustCaches) == 0 {
+		systemTrustState = "configured-complete-context-external-to-system-volume"
+	}
 	report.ProductOSRoot = &runtimeQualifiedRoot{
 		IndexSHA256: artifact.SHA256, ProductVersion: index.ProductVersion, ProductBuild: index.ProductBuild,
 		Executables: len(index.Executables), Plists: len(index.Plists), MachServices: len(index.MachServices),
 		SharedCaches: len(index.SharedCaches), TrustCaches: len(index.StaticTrustCaches),
+		SharedCacheState: sharedCacheState, SystemTrustState: systemTrustState,
 	}
 	return nil
 }

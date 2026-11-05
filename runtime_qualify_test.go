@@ -142,6 +142,27 @@ func TestRuntimeQualificationRejectsMismatchedRootTrust(t *testing.T) {
 	}
 }
 
+func TestRuntimeQualificationAcceptsSystemVolumeWithExternalRuntimeCaches(t *testing.T) {
+	c, _ := newRuntimeQualificationTestCache(t, true)
+	root := targetTestRoot(t)
+	for _, relative := range []string{
+		"System/Library/dyld/dyld_shared_cache_arm64e",
+		"System/Library/dyld/dyld_shared_cache_arm64e.01",
+		"private/var/db/StaticTrustCache",
+	} {
+		if err := os.Remove(filepath.Join(root, filepath.FromSlash(relative))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report, err := qualifyRuntime(context.Background(), c, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ProductOSRoot == nil || report.ProductOSRoot.SharedCacheState != "external-to-system-volume" || report.ProductOSRoot.SystemTrustState != "configured-complete-context-external-to-system-volume" {
+		t.Fatalf("external runtime inputs were not explicit: %+v", report.ProductOSRoot)
+	}
+}
+
 func TestRuntimeQualificationAgainstCurrentCache(t *testing.T) {
 	if os.Getenv("KERNEL_POC_TEST_CURRENT_CACHE") != "1" {
 		t.Skip("set KERNEL_POC_TEST_CURRENT_CACHE=1 to verify the repository's imported runtime")

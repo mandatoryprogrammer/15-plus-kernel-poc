@@ -71,7 +71,7 @@ go build -mod=vendor -o 15-plus-kernel-poc .
 | `go run . probe run FILE -- ARG...` | Run a probe through the same automatic admission, transfer, readback, and cleanup path as every other payload. |
 | `go run . probe supervisor --symbol SYMBOL` | Generate a fork-free pthread supervisor with atomic stage markers and a bounded framework-call deadline. |
 | `go run . runtime qualify` | Verify the complete boot tuple, whole-system trust context, UI inputs, and admission fingerprint as one contract. |
-| `go run . target index PRODUCTOS_ROOT` | Build a content-addressed inventory of executables, plists, Mach services, shared caches, trust cache, and non-followed symlinks. |
+| `go run . target index PRODUCTOS_ROOT` | Build a content-addressed inventory of executables, plists, Mach services, any materialized shared/trust caches, explicit filesystem-metadata skips, and non-followed symlinks. |
 | `go run . system-trust import StaticTrustCache.img4` | Import one complete system static-trust IMG4 and merge its whole table into the next volatile boot context. |
 | `go run . system-trust status` | Verify and report the configured complete system trust context. |
 | `go run . system-trust clear` | Clear the configured context while retaining its immutable cached object. |
@@ -244,11 +244,16 @@ go run . target index /path/to/ProductOS-root
 go run . runtime qualify /path/to/ProductOS-root
 ```
 
-The optional root qualification additionally requires its ProductOS build,
-complete StaticTrustCache, and shared-cache inventory to match the configured
-runtime. The InternalUI bundle keeps its own reported source version; it is not
-incorrectly required to equal the newer ProductOS root. Target indexing records
-symlinks without following them and prunes superseded index JSON automatically.
+The optional root qualification additionally requires its ProductOS build and
+`usr/lib/dyld` identity to match the configured runtime. When StaticTrustCache
+or shared caches are materialized in that System volume they are inventoried
+and the trust cache must match; when modern volume layout keeps them outside the
+System volume, the report records that state and binds the separately verified
+complete configured trust context. The InternalUI bundle keeps its own reported
+source version; it is not incorrectly required to equal the newer ProductOS
+root. Target indexing records symlinks without following them, explicitly
+records the APFS root `.file` metadata skip, and prunes superseded index JSON
+automatically.
 
 Run `cache gc --dry-run` to review disposable test/build scratch, then `cache
 gc` to remove it. High-level payload runs also prune abandoned files older than
