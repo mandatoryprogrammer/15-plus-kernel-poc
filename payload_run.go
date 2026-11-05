@@ -273,7 +273,11 @@ func runPreparedPayload(ctx context.Context, c *cache, main payloadEntry, includ
 		}
 		command = append(command, args...)
 		fmt.Fprintf(c.out, "Executing admitted payload: %s\n", remoteCommand(command))
-		return runSSH(ctx, access, false, command, os.Stdin, os.Stdout, os.Stderr)
+		targetOutput := c.targetOut
+		if targetOutput == nil {
+			targetOutput = os.Stdout
+		}
+		return runSSH(ctx, access, false, command, os.Stdin, targetOutput, os.Stderr)
 	})
 }
 

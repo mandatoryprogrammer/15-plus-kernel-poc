@@ -30,10 +30,11 @@ type asset struct {
 }
 
 type cache struct {
-	root   string
-	client *http.Client
-	out    io.Writer
-	mu     sync.Mutex
+	root      string
+	client    *http.Client
+	out       io.Writer
+	targetOut io.Writer
+	mu        sync.Mutex
 }
 
 var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -45,7 +46,7 @@ func newCache(root string) (*cache, error) {
 			return nil, err
 		}
 	}
-	return &cache{root: root, out: terminalOutput(os.Stderr), client: &http.Client{
+	return &cache{root: root, out: terminalOutput(os.Stderr), targetOut: os.Stdout, client: &http.Client{
 		Timeout: 2 * time.Hour,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if req.URL.Scheme != "https" {

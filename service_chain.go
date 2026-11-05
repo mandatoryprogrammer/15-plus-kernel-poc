@@ -264,11 +264,14 @@ func runServiceChain(ctx context.Context, c *cache, manifestPath string, program
 		}
 	}()
 	fmt.Fprintf(c.out, "Launching service chain %q in order %s through the imported ProductOS root launcher\n", manifest.Name, strings.Join(manifest.Services, " -> "))
-	originalOutput := c.out
+	originalOutput := c.targetOut
+	if originalOutput == nil {
+		originalOutput = os.Stdout
+	}
 	capture := &boundedTargetCapture{}
-	c.out = io.MultiWriter(originalOutput, capture)
+	c.targetOut = io.MultiWriter(originalOutput, capture)
 	runErr = runPayload(ctx, c, runArguments)
-	c.out = originalOutput
+	c.targetOut = originalOutput
 	captured, truncated := capture.snapshot()
 	report.Markers = selectedTargetMarkers(captured,
 		"PRODUCT_SERVICE_CHAIN ", "CHROOT_UI_DIRFD_TRANSITION ",
@@ -331,11 +334,14 @@ func machServiceCommand(ctx context.Context, c *cache, args []string) error {
 		return fmt.Errorf("write initial Mach-service report: %w", err)
 	}
 	fmt.Fprintf(c.out, "Demand-probing Mach service %s with bounded lookup, send, and right cleanup\n", args[1])
-	originalOutput := c.out
+	originalOutput := c.targetOut
+	if originalOutput == nil {
+		originalOutput = os.Stdout
+	}
 	capture := &boundedTargetCapture{}
-	c.out = io.MultiWriter(originalOutput, capture)
+	c.targetOut = io.MultiWriter(originalOutput, capture)
 	runErr := runPayload(ctx, c, runArguments)
-	c.out = originalOutput
+	c.targetOut = originalOutput
 	captured, truncated := capture.snapshot()
 	report.Markers = selectedTargetMarkers(captured, "MACH_SERVICE_PROBE ", "MACH_SERVICE_PROBE_LAUNCHD_DEMAND ")
 	report.OutputTruncated = truncated
