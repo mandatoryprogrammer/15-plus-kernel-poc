@@ -45,11 +45,7 @@ func TestPayloadRunPreparationAndAdmissionFingerprint(t *testing.T) {
 	}
 	c.out = io.Discard
 	source := filepath.Join(root, "probe")
-	unsigned := make([]byte, 128)
-	le := binary.LittleEndian
-	for index, value := range []uint32{0xfeedfacf, 0x100000c, 0, 2, 1, 24, 0, 0, 0x32, 24, 2, 0x1a0000, 0x1a0000, 0} {
-		le.PutUint32(unsigned[index*4:], value)
-	}
+	unsigned := unsignedRuntimeMachOFixture(2)
 	if err := os.WriteFile(source, unsigned, 0600); err != nil {
 		t.Fatal(err)
 	}

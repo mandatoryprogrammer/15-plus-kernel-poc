@@ -21,8 +21,17 @@ import (
 )
 
 const (
-	payloadLimit      = 64 << 20
-	machoTypeDylinker = macho.Type(7)
+	payloadLimit                  = 64 << 20
+	machoTypeDylinker             = macho.Type(7)
+	codeDirectoryVersionExecSeg   = 0x20400
+	codeDirectoryExecSegBytes     = 88
+	codeDirectoryPagePower        = 14
+	codeDirectoryPageBytes        = 1 << codeDirectoryPagePower
+	codeDirectoryAdHocFlag        = 2
+	codeDirectoryMainBinaryFlag   = 1
+	codeSignatureRequirementsSlot = 2
+	codeSignatureCMSSlot          = 0x10000
+	codeSignatureMinimumBytes     = 0x4800
 )
 
 func packedPlatformVersion(version string) (uint32, error) {
@@ -268,6 +277,61 @@ func codeHash(executable, signature []byte) (string, error) {
 
 func alignValue(value, alignment int) int { return (value + alignment - 1) &^ (alignment - 1) }
 
+// executableSegmentContract derives the CodeDirectory executable-segment
+// fields from the file-backed executable segments. Modern arm64 iOS code
+// signatures carry this geometry even when the executable has no special
+// entitlements.
+func executableSegmentContract(input []byte) (uint64, uint64, uint64, error) {
+	if len(input) < 32 || binary.LittleEndian.Uint32(input) != 0xfeedfacf {
+		return 0, 0, 0, errors.New("executable-segment inspection requires a thin little-endian 64-bit Mach-O")
+	}
+	le := binary.LittleEndian
+	ncmds, commandsSize := int(le.Uint32(input[16:])), int(le.Uint32(input[20:]))
+	if ncmds < 1 || ncmds > 4096 || commandsSize < 8 || 32+commandsSize > len(input) {
+		return 0, 0, 0, errors.New("invalid Mach-O load command geometry during executable-segment inspection")
+	}
+	at := 32
+	var first, last uint64
+	found := false
+	for index := 0; index < ncmds; index++ {
+		if at > 32+commandsSize-8 {
+			return 0, 0, 0, errors.New("truncated Mach-O load command during executable-segment inspection")
+		}
+		command, size := le.Uint32(input[at:]), int(le.Uint32(input[at+4:]))
+		if size < 8 || size&7 != 0 || at+size > 32+commandsSize {
+			return 0, 0, 0, errors.New("invalid Mach-O load command during executable-segment inspection")
+		}
+		if command == 0x19 {
+			if size < 72 {
+				return 0, 0, 0, errors.New("short 64-bit segment command during executable-segment inspection")
+			}
+			fileOffset, fileSize := le.Uint64(input[at+40:]), le.Uint64(input[at+48:])
+			end := fileOffset + fileSize
+			if end < fileOffset || end > uint64(len(input)) {
+				return 0, 0, 0, errors.New("invalid file-backed segment during executable-segment inspection")
+			}
+			if le.Uint32(input[at+60:])&4 != 0 && fileSize != 0 {
+				if !found || fileOffset < first {
+					first = fileOffset
+				}
+				if !found || end > last {
+					last = end
+				}
+				found = true
+			}
+		}
+		at += size
+	}
+	if at != 32+commandsSize || !found || last <= first {
+		return 0, 0, 0, errors.New("Mach-O has no bounded file-backed executable segment")
+	}
+	flags := uint64(0)
+	if macho.Type(le.Uint32(input[12:])) == macho.TypeExec {
+		flags = codeDirectoryMainBinaryFlag
+	}
+	return first, last - first, flags, nil
+}
+
 // adHocSignExecutable adds a deterministic SHA-256 CodeDirectory to an
 // unsigned thin executable, dylib, or dynamic linker. The input must reserve
 // one 16-byte load command in its normal header padding, as images produced by
@@ -334,6 +398,9 @@ func adHocSignExecutable(input []byte, identifier string) ([]byte, error) {
 	if at != 32+commandsSize || !ios {
 		return nil, errors.New("executable does not declare a supported iOS platform")
 	}
+	if linkedit < 0 {
+		return nil, errors.New("Mach-O has no __LINKEDIT segment for an embedded signature")
+	}
 	commandAt := 32 + commandsSize
 	if commandAt+16 > firstData || commandAt+16 > len(input) {
 		return nil, errors.New("Mach-O has no header padding for a code-signature command")
@@ -341,14 +408,26 @@ func adHocSignExecutable(input []byte, identifier string) ([]byte, error) {
 	if !bytes.Equal(input[commandAt:commandAt+16], make([]byte, 16)) {
 		return nil, errors.New("Mach-O signature-command padding is not empty")
 	}
-	if identifier == "" || strings.ContainsAny(identifier, "\x00\r\n") {
+	if identifier == "" || len(identifier) > 255 || strings.ContainsAny(identifier, "\x00\r\n") {
 		return nil, errors.New("invalid signing identifier")
 	}
+	execBase, execLimit, execFlags, err := executableSegmentContract(input)
+	if err != nil {
+		return nil, err
+	}
 	codeLimit := alignValue(len(input), 16)
-	codeSlots := (codeLimit + 4095) / 4096
-	hashOffset := alignValue(44+len(identifier)+1, 8)
+	codeSlots := (codeLimit + codeDirectoryPageBytes - 1) / codeDirectoryPageBytes
+	hashOffset := codeDirectoryExecSegBytes + len(identifier) + 1 + codeSignatureRequirementsSlot*sha256.Size
 	codeDirectorySize := hashOffset + codeSlots*sha256.Size
-	signatureSize := 20 + codeDirectorySize
+	requirements := make([]byte, 12)
+	be.PutUint32(requirements, 0xfade0c01)
+	be.PutUint32(requirements[4:], uint32(len(requirements)))
+	// The requirement-set count remains zero for an ad-hoc signature.
+	emptyCMS := make([]byte, 8)
+	be.PutUint32(emptyCMS, 0xfade0b01)
+	be.PutUint32(emptyCMS[4:], uint32(len(emptyCMS)))
+	superBlobSize := 12 + 3*8 + codeDirectorySize + len(requirements) + len(emptyCMS)
+	signatureSize := max(codeSignatureMinimumBytes, alignValue(superBlobSize, 16))
 	if codeLimit+signatureSize > payloadLimit {
 		return nil, errors.New("signed executable exceeds 64 MiB payload limit")
 	}
@@ -360,42 +439,56 @@ func adHocSignExecutable(input []byte, identifier string) ([]byte, error) {
 	le.PutUint32(executable[commandAt+4:], 16)
 	le.PutUint32(executable[commandAt+8:], uint32(codeLimit))
 	le.PutUint32(executable[commandAt+12:], uint32(signatureSize))
-	if linkedit >= 0 {
-		fileOffset := le.Uint64(executable[linkedit+40:])
-		oldFileSize := le.Uint64(executable[linkedit+48:])
-		oldVMSize := le.Uint64(executable[linkedit+32:])
-		if fileOffset >= uint64(len(input)) || oldFileSize > uint64(len(input))-fileOffset {
-			return nil, errors.New("invalid __LINKEDIT file range")
-		}
-		fileSize := uint64(codeLimit+signatureSize) - fileOffset
-		vmSize := uint64(alignValue(int(fileSize), 0x4000))
-		if vmSize < oldVMSize {
-			vmSize = oldVMSize
-		}
-		le.PutUint64(executable[linkedit+48:], fileSize)
-		le.PutUint64(executable[linkedit+32:], vmSize)
+	fileOffset := le.Uint64(executable[linkedit+40:])
+	oldFileSize := le.Uint64(executable[linkedit+48:])
+	oldVMSize := le.Uint64(executable[linkedit+32:])
+	if fileOffset >= uint64(len(input)) || oldFileSize > uint64(len(input))-fileOffset || fileOffset+oldFileSize != uint64(len(input)) {
+		return nil, errors.New("__LINKEDIT does not end at the unsigned input boundary")
 	}
+	fileSize := uint64(codeLimit+signatureSize) - fileOffset
+	vmSize := uint64(alignValue(int(fileSize), codeDirectoryPageBytes))
+	if vmSize < oldVMSize {
+		vmSize = oldVMSize
+	}
+	le.PutUint64(executable[linkedit+48:], fileSize)
+	le.PutUint64(executable[linkedit+32:], vmSize)
 	codeDirectory := make([]byte, codeDirectorySize)
 	be.PutUint32(codeDirectory, 0xfade0c02)
 	be.PutUint32(codeDirectory[4:], uint32(codeDirectorySize))
-	be.PutUint32(codeDirectory[8:], 0x20001)
-	be.PutUint32(codeDirectory[12:], 2|callerLinkerSignedFlag)
+	be.PutUint32(codeDirectory[8:], codeDirectoryVersionExecSeg)
+	be.PutUint32(codeDirectory[12:], codeDirectoryAdHocFlag|callerLinkerSignedFlag)
 	be.PutUint32(codeDirectory[16:], uint32(hashOffset))
-	be.PutUint32(codeDirectory[20:], 44)
+	be.PutUint32(codeDirectory[20:], codeDirectoryExecSegBytes)
+	be.PutUint32(codeDirectory[24:], codeSignatureRequirementsSlot)
 	be.PutUint32(codeDirectory[28:], uint32(codeSlots))
 	be.PutUint32(codeDirectory[32:], uint32(codeLimit))
-	codeDirectory[36], codeDirectory[37], codeDirectory[39] = sha256.Size, 2, 12
-	copy(codeDirectory[44:], identifier)
+	codeDirectory[36], codeDirectory[37], codeDirectory[39] = sha256.Size, 2, codeDirectoryPagePower
+	be.PutUint64(codeDirectory[64:], execBase)
+	be.PutUint64(codeDirectory[72:], execLimit)
+	be.PutUint64(codeDirectory[80:], execFlags)
+	copy(codeDirectory[codeDirectoryExecSegBytes:], identifier)
+	requirementsHash := sha256.Sum256(requirements)
+	copy(codeDirectory[hashOffset-codeSignatureRequirementsSlot*sha256.Size:], requirementsHash[:])
 	for slot := 0; slot < codeSlots; slot++ {
-		hash := sha256.Sum256(executable[slot*4096 : min((slot+1)*4096, codeLimit)])
+		hash := sha256.Sum256(executable[slot*codeDirectoryPageBytes : min((slot+1)*codeDirectoryPageBytes, codeLimit)])
 		copy(codeDirectory[hashOffset+slot*sha256.Size:], hash[:])
 	}
-	super := make([]byte, 20, signatureSize)
+	super := make([]byte, signatureSize)
 	be.PutUint32(super, 0xfade0cc0)
-	be.PutUint32(super[4:], uint32(signatureSize))
-	be.PutUint32(super[8:], 1)
-	be.PutUint32(super[16:], 20)
-	super = append(super, codeDirectory...)
+	be.PutUint32(super[4:], uint32(superBlobSize))
+	be.PutUint32(super[8:], 3)
+	codeDirectoryOffset := 12 + 3*8
+	requirementsOffset := codeDirectoryOffset + codeDirectorySize
+	cmsOffset := requirementsOffset + len(requirements)
+	be.PutUint32(super[12:], 0)
+	be.PutUint32(super[16:], uint32(codeDirectoryOffset))
+	be.PutUint32(super[20:], codeSignatureRequirementsSlot)
+	be.PutUint32(super[24:], uint32(requirementsOffset))
+	be.PutUint32(super[28:], codeSignatureCMSSlot)
+	be.PutUint32(super[32:], uint32(cmsOffset))
+	copy(super[codeDirectoryOffset:], codeDirectory)
+	copy(super[requirementsOffset:], requirements)
+	copy(super[cmsOffset:], emptyCMS)
 	return append(executable, super...), nil
 }
 
@@ -519,6 +612,38 @@ type preparedPayload struct {
 	LinkerSigned bool
 }
 
+func validateRuntimeCallerCodeDirectory(input, codeDirectory []byte) error {
+	if len(codeDirectory) < codeDirectoryExecSegBytes || binary.BigEndian.Uint32(codeDirectory) != 0xfade0c02 {
+		return errors.New("caller CodeDirectory is truncated")
+	}
+	be := binary.BigEndian
+	if be.Uint32(codeDirectory[8:]) < codeDirectoryVersionExecSeg {
+		return errors.New("caller CodeDirectory predates executable-segment metadata")
+	}
+	pagePower := codeDirectory[39]
+	if codeDirectory[36] != sha256.Size || codeDirectory[37] != 2 || pagePower != 12 && pagePower != codeDirectoryPagePower {
+		return errors.New("caller CodeDirectory must use SHA-256 with 4 KiB or 16 KiB code slots")
+	}
+	codeLimit := uint64(be.Uint32(codeDirectory[32:]))
+	codeSlots := uint64(be.Uint32(codeDirectory[28:]))
+	pageBytes := uint64(1) << pagePower
+	if codeLimit == 0 || codeLimit > uint64(len(input)) || codeSlots != (codeLimit+pageBytes-1)/pageBytes {
+		return errors.New("caller CodeDirectory has incompatible code-slot geometry")
+	}
+	hashOffset := uint64(be.Uint32(codeDirectory[16:]))
+	if hashOffset < codeDirectoryExecSegBytes || hashOffset > uint64(len(codeDirectory)) || codeSlots > (uint64(len(codeDirectory))-hashOffset)/sha256.Size {
+		return errors.New("caller CodeDirectory hash table is out of bounds")
+	}
+	execBase, execLimit, execFlags, err := executableSegmentContract(input)
+	if err != nil {
+		return err
+	}
+	if be.Uint64(codeDirectory[64:]) != execBase || be.Uint64(codeDirectory[72:]) != execLimit || be.Uint64(codeDirectory[80:])&codeDirectoryMainBinaryFlag != execFlags {
+		return errors.New("caller CodeDirectory executable-segment metadata differs from the Mach-O")
+	}
+	return nil
+}
+
 // enableCallerLinkerSigned marks an existing ad-hoc primary CodeDirectory for
 // the runtime's identifier-independent caller admission path. The flags live
 // inside the CodeDirectory, so this changes its CDHash but no executable page
@@ -570,15 +695,23 @@ func enableCallerLinkerSigned(input []byte) ([]byte, bool, error) {
 	if primary < 0 || primary > len(signature)-44 || be.Uint32(signature[primary:]) != 0xfade0c02 {
 		return nil, false, errors.New("primary CodeDirectory missing during caller admission")
 	}
-	flags := be.Uint32(signature[primary+12:])
-	if flags&2 == 0 {
+	codeDirectorySize := int(be.Uint32(signature[primary+4:]))
+	if codeDirectorySize < codeDirectoryExecSegBytes || primary > len(signature)-codeDirectorySize {
+		return nil, false, errors.New("primary CodeDirectory is truncated during caller admission")
+	}
+	codeDirectory := signature[primary : primary+codeDirectorySize]
+	if err := validateRuntimeCallerCodeDirectory(input, codeDirectory); err != nil {
+		return nil, false, fmt.Errorf("caller admission rejects a runtime-incompatible signature: %w", err)
+	}
+	flags := be.Uint32(codeDirectory[12:])
+	if flags&codeDirectoryAdHocFlag == 0 {
 		return nil, false, errors.New("caller admission accepts unsigned or existing ad-hoc binaries; this signature is not ad-hoc")
 	}
 	wanted := flags | callerLinkerSignedFlag
 	if wanted == flags {
 		return output, false, nil
 	}
-	be.PutUint32(signature[primary+12:], wanted)
+	be.PutUint32(codeDirectory[12:], wanted)
 	return output, true, nil
 }
 

@@ -289,13 +289,68 @@ func TestExecutableArchitectureAndCodePages(t *testing.T) {
 	}
 }
 
+func unsignedRuntimeMachOFixture(fileType macho.Type) []byte {
+	return unsignedRuntimeMachOFixtureSize(fileType, 0x4000)
+}
+
+func unsignedRuntimeMachOFixtureSize(fileType macho.Type, textFileSize int) []byte {
+	const linkeditSize = 0x20
+	b := make([]byte, textFileSize+linkeditSize)
+	le := binary.LittleEndian
+	for index, value := range []uint32{
+		0xfeedfacf, 0x100000c, 0, uint32(fileType), 3, 168, 0, 0,
+	} {
+		le.PutUint32(b[index*4:], value)
+	}
+	putSegment := func(at int, name string, vmaddr, vmSize, fileOffset, fileSize uint64, protections uint32) {
+		le.PutUint32(b[at:], 0x19)
+		le.PutUint32(b[at+4:], 72)
+		copy(b[at+8:at+24], name)
+		le.PutUint64(b[at+24:], vmaddr)
+		le.PutUint64(b[at+32:], vmSize)
+		le.PutUint64(b[at+40:], fileOffset)
+		le.PutUint64(b[at+48:], fileSize)
+		le.PutUint32(b[at+56:], protections)
+		le.PutUint32(b[at+60:], protections)
+	}
+	putSegment(32, "__TEXT", 0x100000000, uint64(textFileSize), 0, uint64(textFileSize), 5)
+	putSegment(104, "__LINKEDIT", 0x100000000+uint64(textFileSize), 0x4000, uint64(textFileSize), linkeditSize, 1)
+	le.PutUint32(b[176:], 0x32)
+	le.PutUint32(b[180:], 24)
+	le.PutUint32(b[184:], 2)
+	le.PutUint32(b[188:], 0x1a0000)
+	le.PutUint32(b[192:], 0x1a0000)
+	copy(b[textFileSize:], []byte("deterministic-linkedit-fixture"))
+	return b
+}
+
+func runtimeSignatureForTest(t *testing.T, body []byte) ([]byte, []byte) {
+	t.Helper()
+	le, be := binary.LittleEndian, binary.BigEndian
+	at := 32
+	for index := 0; index < int(le.Uint32(body[16:])); index++ {
+		size := int(le.Uint32(body[at+4:]))
+		if le.Uint32(body[at:]) == 0x1d {
+			offset, signatureSize := int(le.Uint32(body[at+8:])), int(le.Uint32(body[at+12:]))
+			signature := body[offset : offset+signatureSize]
+			for entry := 0; entry < int(be.Uint32(signature[8:])); entry++ {
+				row := signature[12+entry*8:]
+				if be.Uint32(row) == 0 {
+					codeOffset := int(be.Uint32(row[4:]))
+					codeSize := int(be.Uint32(signature[codeOffset+4:]))
+					return signature, signature[codeOffset : codeOffset+codeSize]
+				}
+			}
+		}
+		at += size
+	}
+	t.Fatal("runtime signature lacks a primary CodeDirectory")
+	return nil, nil
+}
+
 func TestNativeAdHocSigning(t *testing.T) {
 	for _, fileType := range []macho.Type{macho.TypeExec, macho.TypeDylib, machoTypeDylinker} {
-		b := make([]byte, 96)
-		le := binary.LittleEndian
-		for i, value := range []uint32{0xfeedfacf, 0x100000c, 0, uint32(fileType), 1, 24, 0, 0, 0x32, 24, 2, 0x1a0000, 0x1a0000, 0} {
-			le.PutUint32(b[i*4:], value)
-		}
+		b := unsignedRuntimeMachOFixture(fileType)
 		signed, err := adHocSignExecutable(b, "example")
 		if err != nil {
 			t.Fatal(err)
@@ -303,19 +358,93 @@ func TestNativeAdHocSigning(t *testing.T) {
 		if hash, err := inspectExecutable(signed); err != nil || len(hash) != 40 {
 			t.Fatalf("native signature rejected type=%d: %q %v", fileType, hash, err)
 		}
-		signed[90] ^= 1
+		signed[0x200] ^= 1
 		if _, err := inspectExecutable(signed); err == nil {
 			t.Fatalf("native signature accepted modified code type=%d", fileType)
 		}
 	}
 }
 
-func TestAutomaticLCUUIDRehashesExistingAdHocSignature(t *testing.T) {
-	b := make([]byte, 128)
-	le := binary.LittleEndian
-	for i, value := range []uint32{0xfeedfacf, 0x100000c, 0, 2, 1, 24, 0, 0, 0x32, 24, 2, 0x1a0000, 0x1a0000, 0} {
-		le.PutUint32(b[i*4:], value)
+func TestNativeAdHocSigningUsesRuntimeCompatibleEnvelope(t *testing.T) {
+	be := binary.BigEndian
+	for _, fileType := range []macho.Type{macho.TypeExec, macho.TypeDylib, machoTypeDylinker} {
+		signed, err := adHocSignExecutable(unsignedRuntimeMachOFixture(fileType), "runtime-envelope")
+		if err != nil {
+			t.Fatal(err)
+		}
+		signature, directory := runtimeSignatureForTest(t, signed)
+		if len(signature) != codeSignatureMinimumBytes || int(be.Uint32(signature[4:])) >= len(signature) || !bytes.Equal(signature[be.Uint32(signature[4:]):], make([]byte, len(signature)-int(be.Uint32(signature[4:])))) {
+			t.Fatalf("signature allocation is not bounded zero padding: bytes=%d super=%d", len(signature), be.Uint32(signature[4:]))
+		}
+		if be.Uint32(signature[8:]) != 3 || be.Uint32(directory[8:]) != codeDirectoryVersionExecSeg || directory[39] != codeDirectoryPagePower || be.Uint32(directory[24:]) != codeSignatureRequirementsSlot {
+			t.Fatalf("runtime CodeDirectory geometry changed: count=%d version=%#x page=%d special=%d", be.Uint32(signature[8:]), be.Uint32(directory[8:]), directory[39], be.Uint32(directory[24:]))
+		}
+		wantExecFlags := uint64(0)
+		if fileType == macho.TypeExec {
+			wantExecFlags = codeDirectoryMainBinaryFlag
+		}
+		if be.Uint64(directory[64:]) != 0 || be.Uint64(directory[72:]) != 0x4000 || be.Uint64(directory[80:]) != wantExecFlags {
+			t.Fatalf("executable-segment contract changed for type=%d: base=%#x limit=%#x flags=%#x", fileType, be.Uint64(directory[64:]), be.Uint64(directory[72:]), be.Uint64(directory[80:]))
+		}
+		entries := map[uint32][]byte{}
+		for index := 0; index < int(be.Uint32(signature[8:])); index++ {
+			row := signature[12+index*8:]
+			typeID, offset := be.Uint32(row), int(be.Uint32(row[4:]))
+			blobSize := int(be.Uint32(signature[offset+4:]))
+			entries[typeID] = signature[offset : offset+blobSize]
+		}
+		requirements, cms := entries[codeSignatureRequirementsSlot], entries[codeSignatureCMSSlot]
+		if len(requirements) != 12 || be.Uint32(requirements) != 0xfade0c01 || be.Uint32(requirements[8:]) != 0 || len(cms) != 8 || be.Uint32(cms) != 0xfade0b01 {
+			t.Fatalf("runtime signature side blobs changed: requirements=%x cms=%x", requirements, cms)
+		}
+		hashOffset := int(be.Uint32(directory[16:]))
+		requirementsHash := sha256.Sum256(requirements)
+		if !bytes.Equal(directory[hashOffset-2*sha256.Size:hashOffset-sha256.Size], requirementsHash[:]) {
+			t.Fatal("requirements special slot is not content-bound")
+		}
+		if _, changed, err := enableCallerLinkerSigned(signed); err != nil || changed {
+			t.Fatalf("runtime envelope was not idempotently admitted: changed=%t err=%v", changed, err)
+		}
 	}
+}
+
+func TestCallerAdmissionRejectsLegacyNormalizerGeometry(t *testing.T) {
+	be := binary.BigEndian
+	baseline, err := adHocSignExecutable(unsignedRuntimeMachOFixture(macho.TypeExec), "fail-closed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func([]byte){
+		"legacy-version":    func(directory []byte) { be.PutUint32(directory[8:], 0x20001) },
+		"unsupported-pages": func(directory []byte) { directory[39] = 13 },
+		"wrong-exec-limit":  func(directory []byte) { be.PutUint64(directory[72:], 0x3fff) },
+		"missing-main-flag": func(directory []byte) { be.PutUint64(directory[80:], 0) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := bytes.Clone(baseline)
+			_, directory := runtimeSignatureForTest(t, candidate)
+			mutate(directory)
+			if _, _, err := enableCallerLinkerSigned(candidate); err == nil || !strings.Contains(err.Error(), "runtime-incompatible") {
+				t.Fatalf("legacy or malformed caller envelope was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestCallerAdmissionRetainsModernFourKiBCodeDirectories(t *testing.T) {
+	signed, err := adHocSignExecutable(unsignedRuntimeMachOFixtureSize(macho.TypeExec, 0x800), "four-kib-compatible")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, directory := runtimeSignatureForTest(t, signed)
+	directory[39] = 12
+	if _, changed, err := enableCallerLinkerSigned(signed); err != nil || changed {
+		t.Fatalf("modern 4 KiB CodeDirectory was rejected: changed=%t err=%v", changed, err)
+	}
+}
+
+func TestAutomaticLCUUIDRehashesExistingAdHocSignature(t *testing.T) {
+	b := unsignedRuntimeMachOFixture(macho.TypeExec)
 	signed, err := adHocSignExecutable(b, "missing-uuid")
 	if err != nil {
 		t.Fatal(err)
