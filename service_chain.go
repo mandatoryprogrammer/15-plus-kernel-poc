@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -35,27 +36,92 @@ type serviceChainManifest struct {
 }
 
 type serviceChainReport struct {
-	Schema         string   `json:"schema"`
-	StartedAt      string   `json:"started_at"`
-	FinishedAt     string   `json:"finished_at"`
-	Manifest       string   `json:"manifest"`
-	ManifestSHA256 string   `json:"manifest_sha256"`
-	Name           string   `json:"name"`
-	Services       []string `json:"services"`
-	LauncherMode   string   `json:"launcher_mode"`
-	Arguments      []string `json:"arguments"`
-	Exit           string   `json:"exit"`
-	Error          string   `json:"error,omitempty"`
+	Schema          string   `json:"schema"`
+	StartedAt       string   `json:"started_at"`
+	FinishedAt      string   `json:"finished_at"`
+	Manifest        string   `json:"manifest"`
+	ManifestSHA256  string   `json:"manifest_sha256"`
+	Name            string   `json:"name"`
+	Services        []string `json:"services"`
+	LauncherMode    string   `json:"launcher_mode"`
+	Arguments       []string `json:"arguments"`
+	ChainReady      bool     `json:"chain_ready"`
+	ProgramReached  bool     `json:"program_reached"`
+	Markers         []string `json:"markers,omitempty"`
+	OutputTruncated bool     `json:"output_truncated,omitempty"`
+	Exit            string   `json:"exit"`
+	Error           string   `json:"error,omitempty"`
 }
 
 type machServiceReport struct {
-	Schema       string `json:"schema"`
-	StartedAt    string `json:"started_at"`
-	FinishedAt   string `json:"finished_at"`
-	Service      string `json:"service"`
-	LauncherMode string `json:"launcher_mode"`
-	Exit         string `json:"exit"`
-	Error        string `json:"error,omitempty"`
+	Schema          string   `json:"schema"`
+	StartedAt       string   `json:"started_at"`
+	FinishedAt      string   `json:"finished_at"`
+	Service         string   `json:"service"`
+	LauncherMode    string   `json:"launcher_mode"`
+	ActivationExact bool     `json:"activation_exact"`
+	Markers         []string `json:"markers,omitempty"`
+	OutputTruncated bool     `json:"output_truncated,omitempty"`
+	Exit            string   `json:"exit"`
+	Error           string   `json:"error,omitempty"`
+}
+
+type boundedTargetCapture struct {
+	mu        sync.Mutex
+	body      []byte
+	truncated bool
+}
+
+func (capture *boundedTargetCapture) Write(body []byte) (int, error) {
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	const limit = 1 << 20
+	remaining := limit - len(capture.body)
+	if remaining > 0 {
+		if remaining > len(body) {
+			remaining = len(body)
+		}
+		capture.body = append(capture.body, body[:remaining]...)
+	}
+	if remaining != len(body) {
+		capture.truncated = true
+	}
+	return len(body), nil
+}
+
+func (capture *boundedTargetCapture) snapshot() ([]byte, bool) {
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	return append([]byte(nil), capture.body...), capture.truncated
+}
+
+func selectedTargetMarkers(body []byte, prefixes ...string) []string {
+	lines := strings.Split(strings.ReplaceAll(string(body), "\r", ""), "\n")
+	markers := make([]string, 0, 16)
+	for _, line := range lines {
+		if len(line) > 4096 {
+			continue
+		}
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(line, prefix) {
+				markers = append(markers, line)
+				break
+			}
+		}
+		if len(markers) == 128 {
+			break
+		}
+	}
+	return markers
+}
+
+func markerContains(markers []string, fragment string) bool {
+	for _, marker := range markers {
+		if strings.Contains(marker, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateServiceChainManifest(value serviceChainManifest) error {
@@ -198,7 +264,20 @@ func runServiceChain(ctx context.Context, c *cache, manifestPath string, program
 		}
 	}()
 	fmt.Fprintf(c.out, "Launching service chain %q in order %s through the imported ProductOS root launcher\n", manifest.Name, strings.Join(manifest.Services, " -> "))
+	originalOutput := c.out
+	capture := &boundedTargetCapture{}
+	c.out = io.MultiWriter(originalOutput, capture)
 	runErr = runPayload(ctx, c, runArguments)
+	c.out = originalOutput
+	captured, truncated := capture.snapshot()
+	report.Markers = selectedTargetMarkers(captured,
+		"PRODUCT_SERVICE_CHAIN ", "CHROOT_UI_DIRFD_TRANSITION ",
+		"DISPLAYPLATFORM_LAUNCHD_SERVICE_POSTIMAGE ", "HIDD_LAUNCHD_SERVICE_POSTIMAGE ",
+		"SWITCHBOARD_LAUNCHD_SERVICE_POSTIMAGE ", "PRODUCTOS_CAR_LOGICAL_BOUNDS_PROBE_V1 ",
+		"CAR_LOGICAL_BOUNDS_DISPLAY ", "CAR_LOGICAL_BOUNDS_SUPERVISOR ")
+	report.OutputTruncated = truncated
+	report.ChainReady = markerContains(report.Markers, "PRODUCT_SERVICE_CHAIN stage=ready")
+	report.ProgramReached = markerContains(report.Markers, "CHROOT_UI_DIRFD_TRANSITION stage=exec")
 	return runErr
 }
 
@@ -252,7 +331,15 @@ func machServiceCommand(ctx context.Context, c *cache, args []string) error {
 		return fmt.Errorf("write initial Mach-service report: %w", err)
 	}
 	fmt.Fprintf(c.out, "Demand-probing Mach service %s with bounded lookup, send, and right cleanup\n", args[1])
+	originalOutput := c.out
+	capture := &boundedTargetCapture{}
+	c.out = io.MultiWriter(originalOutput, capture)
 	runErr := runPayload(ctx, c, runArguments)
+	c.out = originalOutput
+	captured, truncated := capture.snapshot()
+	report.Markers = selectedTargetMarkers(captured, "MACH_SERVICE_PROBE ", "MACH_SERVICE_PROBE_LAUNCHD_DEMAND ")
+	report.OutputTruncated = truncated
+	report.ActivationExact = markerContains(report.Markers, "MACH_SERVICE_PROBE stage=complete") && markerContains(report.Markers, "exact=1")
 	report.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	if runErr != nil {
 		report.Exit, report.Error = "failed", runErr.Error()

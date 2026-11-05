@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -42,6 +43,27 @@ func TestServiceChainManifestAndLauncherArguments(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("service-chain payload arguments changed:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestBoundedTargetCaptureAndMarkerReduction(t *testing.T) {
+	capture := &boundedTargetCapture{}
+	input := []byte("host line\nPRODUCT_SERVICE_CHAIN stage=ready count=3 exact=1\r\nCHROOT_UI_DIRFD_TRANSITION stage=exec\n")
+	if written, err := capture.Write(input); err != nil || written != len(input) {
+		t.Fatalf("capture write=%d err=%v", written, err)
+	}
+	body, truncated := capture.snapshot()
+	markers := selectedTargetMarkers(body, "PRODUCT_SERVICE_CHAIN ", "CHROOT_UI_DIRFD_TRANSITION ")
+	if truncated || len(markers) != 2 || !markerContains(markers, "stage=ready") || !markerContains(markers, "stage=exec") {
+		t.Fatalf("marker reduction changed: truncated=%t markers=%q", truncated, markers)
+	}
+	large := bytes.Repeat([]byte{'x'}, (1<<20)+1)
+	if _, err := capture.Write(large); err != nil {
+		t.Fatal(err)
+	}
+	_, truncated = capture.snapshot()
+	if !truncated {
+		t.Fatal("oversized output was not marked truncated")
 	}
 }
 
