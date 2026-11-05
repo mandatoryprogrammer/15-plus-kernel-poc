@@ -377,12 +377,15 @@ func sshSessionResult(ctx context.Context, sessionErr error) error {
 	return sessionErr
 }
 
-func connectSSH(ctx context.Context, c *cache, terminal bool, command []string, wait bool) error {
+func connectSSH(ctx context.Context, c *cache, terminal bool, command []string, wait bool, timeoutPreimage *restoredHostTimeoutPreimage) error {
 	access, err := loadAccess(ctx, c)
 	if err != nil {
 		return err
 	}
 	if wait {
+		if timeoutPreimage == nil {
+			return errors.New("authenticated SSH wait has no restored host timeout preimage")
+		}
 		// A successful authenticated command proves usbmux routing, both generated
 		// keys, sshd readiness, and command execution before the terminal takes over.
 		err = waitFor(ctx, c.out, "authenticated SSH", 3*time.Minute, 5*time.Second, func(ctx context.Context) (bool, error) {
@@ -398,7 +401,11 @@ func connectSSH(ctx context.Context, c *cache, terminal bool, command []string, 
 		if err != nil {
 			return err
 		}
-		cleanup := []string{"/bin/bash", "-c", `/usr/sbin/nvram auto-boot=false; /usr/sbin/nvram -d restore-outcome 2>/dev/null || true; /usr/sbin/nvram -d restored-host-timeout 2>/dev/null || true`}
+		restoreCommand, restoreErr := timeoutPreimage.restoreCommand()
+		if restoreErr != nil {
+			return restoreErr
+		}
+		cleanup := []string{"/bin/bash", "-c", `/usr/sbin/nvram auto-boot=false; /usr/sbin/nvram -d restore-outcome 2>/dev/null || true; ` + restoreCommand}
 		cleanupCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		err = runSSH(cleanupCtx, access, false, cleanup, nil, io.Discard, os.Stderr)
 		cancel()
@@ -416,10 +423,10 @@ func connectSSH(ctx context.Context, c *cache, terminal bool, command []string, 
 		if parseErr != nil {
 			return fmt.Errorf("read temporary restored host timeout inverse: %w", parseErr)
 		}
-		if present {
-			return fmt.Errorf("temporary restored host timeout inverse retained %q", value)
+		if !timeoutPreimage.matches(value, present) {
+			return fmt.Errorf("temporary restored host timeout inverse=%q present=%t, want %q", value, present, timeoutPreimage.description())
 		}
-		fmt.Fprintln(c.out, "Temporary restored host start timeout inverse verified absent")
+		fmt.Fprintf(c.out, "Temporary restored host start timeout inverse verified %s\n", timeoutPreimage.description())
 	}
 	if terminal {
 		fmt.Fprintln(c.out, "Opening the phone's shell. Type exit to close; the USB connection will be released.")
@@ -454,7 +461,7 @@ func ensureShellEnvironment(ctx context.Context, c *cache, terminal bool, comman
 		sshErr := probeSSH(ctx, c)
 		if sshErr == nil {
 			fmt.Fprintln(c.out, "Running environment found; reconnecting")
-			return connectSSH(ctx, c, terminal, command, false)
+			return connectSSH(ctx, c, terminal, command, false, nil)
 		}
 		recovery, recoveryErr := discover(ctx)
 		if recoveryErr == nil {

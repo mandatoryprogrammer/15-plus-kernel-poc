@@ -53,17 +53,18 @@ func serialStartSSH(ctx context.Context, c *cache) error {
 		if err = installSSHAccess(ctx, c, serial, access); err != nil {
 			return err
 		}
-		if err = setTemporaryRestoredHostTimeout(ctx, serial); err != nil {
-			return err
+		timeoutPreimage, timeoutErr := setTemporaryRestoredHostTimeout(ctx, serial)
+		if timeoutErr != nil {
+			return timeoutErr
 		}
-		fmt.Fprintf(c.out, "Temporary restored host start timeout: preimage=absent postimage=%d inverse=delete-after-authenticated-SSH\n", restoredHostStartTimeoutSeconds)
+		fmt.Fprintf(c.out, "Temporary restored host start timeout: preimage=%s postimage=%d inverse=restore-after-authenticated-SSH\n", timeoutPreimage.description(), restoredHostStartTimeoutSeconds)
 		defer func() {
 			if err == nil {
 				return
 			}
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			cleanupErr := clearTemporaryRestoredHostTimeout(cleanupCtx, serial)
+			cleanupErr := restoreTemporaryRestoredHostTimeout(cleanupCtx, serial, timeoutPreimage)
 			err = errors.Join(err, cleanupErr)
 		}()
 		launch := `/bin/bash -c '/usr/local/bin/restored_external >/dev/console 2>&1 </dev/null & /usr/local/sbin/sshd -t -f /private/etc/ssh/sshd_config -h /private/etc/ssh/ssh_host_ed25519_key && /usr/local/sbin/sshd -f /private/etc/ssh/sshd_config -h /private/etc/ssh/ssh_host_ed25519_key'`
@@ -72,7 +73,7 @@ func serialStartSSH(ctx context.Context, c *cache) error {
 			return fmt.Errorf("start SSH environment: %w: %s", err, response)
 		}
 		fmt.Fprintln(c.out, "Resumed the upstream SSH environment; waiting for authentication")
-		return connectSSH(ctx, c, false, []string{"printf", "kernel-poc-ready"}, true)
+		return connectSSH(ctx, c, false, []string{"printf", "kernel-poc-ready"}, true, &timeoutPreimage)
 	})
 }
 

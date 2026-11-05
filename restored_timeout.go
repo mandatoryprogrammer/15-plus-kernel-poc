@@ -13,12 +13,56 @@ const (
 	restoredHostStartTimeoutSeconds = 60
 )
 
+type restoredHostTimeoutPreimage struct {
+	Value   string
+	Present bool
+}
+
 func restoredHostTimeoutSetCommand() string {
 	return fmt.Sprintf("/usr/sbin/nvram %s=%d", restoredHostTimeoutKey, restoredHostStartTimeoutSeconds)
 }
 
 func restoredHostTimeoutDeleteCommand() string {
 	return "/bin/bash -c '/usr/sbin/nvram -d " + restoredHostTimeoutKey + " 2>/dev/null || true'"
+}
+
+func (preimage restoredHostTimeoutPreimage) validate() error {
+	if !preimage.Present {
+		if preimage.Value != "" {
+			return errors.New("absent restored host timeout preimage has a value")
+		}
+		return nil
+	}
+	if preimage.Value == "" {
+		return errors.New("present restored host timeout preimage is empty")
+	}
+	for _, character := range preimage.Value {
+		if character < '0' || character > '9' {
+			return fmt.Errorf("restored host timeout preimage %q is not an unsigned integer", preimage.Value)
+		}
+	}
+	return nil
+}
+
+func (preimage restoredHostTimeoutPreimage) description() string {
+	if !preimage.Present {
+		return "absent"
+	}
+	return preimage.Value
+}
+
+func (preimage restoredHostTimeoutPreimage) restoreCommand() (string, error) {
+	if err := preimage.validate(); err != nil {
+		return "", err
+	}
+	if !preimage.Present {
+		return restoredHostTimeoutDeleteCommand(), nil
+	}
+	return "/usr/sbin/nvram " + restoredHostTimeoutKey + "=" + preimage.Value, nil
+}
+
+func (preimage restoredHostTimeoutPreimage) matches(value string, present bool) bool {
+	return preimage.Present == present && (!present || preimage.Value == value)
 }
 
 func nvramListingValue(listing []byte, key string) (string, bool, error) {
@@ -53,42 +97,47 @@ func readRestoredHostTimeout(ctx context.Context, serial *serialCapture) (string
 	return value, present, nil
 }
 
-func clearTemporaryRestoredHostTimeout(ctx context.Context, serial *serialCapture) error {
-	if response, err := rootExec(ctx, serial, restoredHostTimeoutDeleteCommand()); err != nil {
-		return fmt.Errorf("delete temporary restored host timeout: %w: %s", err, response)
+func restoreTemporaryRestoredHostTimeout(ctx context.Context, serial *serialCapture, preimage restoredHostTimeoutPreimage) error {
+	command, err := preimage.restoreCommand()
+	if err != nil {
+		return err
+	}
+	if response, err := rootExec(ctx, serial, command); err != nil {
+		return fmt.Errorf("restore temporary restored host timeout: %w: %s", err, response)
 	}
 	value, present, err := readRestoredHostTimeout(ctx, serial)
 	if err != nil {
 		return err
 	}
-	if present {
-		return fmt.Errorf("temporary restored host timeout remained %q after inverse", value)
+	if !preimage.matches(value, present) {
+		return fmt.Errorf("temporary restored host timeout inverse=%q present=%t, want %q", value, present, preimage.description())
 	}
 	return nil
 }
 
-func setTemporaryRestoredHostTimeout(ctx context.Context, serial *serialCapture) error {
+func setTemporaryRestoredHostTimeout(ctx context.Context, serial *serialCapture) (restoredHostTimeoutPreimage, error) {
 	value, present, err := readRestoredHostTimeout(ctx, serial)
 	if err != nil {
-		return err
+		return restoredHostTimeoutPreimage{}, err
 	}
-	if present {
-		return fmt.Errorf("temporary restored host timeout preimage is %q, want absent", value)
+	preimage := restoredHostTimeoutPreimage{Value: value, Present: present}
+	if err = preimage.validate(); err != nil {
+		return restoredHostTimeoutPreimage{}, err
 	}
 	response, err := rootExec(ctx, serial, restoredHostTimeoutSetCommand())
 	if err != nil {
-		return fmt.Errorf("set temporary restored host timeout: %w: %s", err, response)
+		return restoredHostTimeoutPreimage{}, fmt.Errorf("set temporary restored host timeout: %w: %s", err, response)
 	}
 	want := fmt.Sprint(restoredHostStartTimeoutSeconds)
 	value, present, readbackErr := readRestoredHostTimeout(ctx, serial)
 	if readbackErr == nil && present && value == want {
-		return nil
+		return preimage, nil
 	}
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cleanupErr := clearTemporaryRestoredHostTimeout(cleanupCtx, serial)
+	cleanupErr := restoreTemporaryRestoredHostTimeout(cleanupCtx, serial, preimage)
 	if readbackErr != nil {
-		return errors.Join(fmt.Errorf("read temporary restored host timeout postimage: %w", readbackErr), cleanupErr)
+		return restoredHostTimeoutPreimage{}, errors.Join(fmt.Errorf("read temporary restored host timeout postimage: %w", readbackErr), cleanupErr)
 	}
-	return errors.Join(fmt.Errorf("temporary restored host timeout postimage=%q present=%t, want %q", value, present, want), cleanupErr)
+	return restoredHostTimeoutPreimage{}, errors.Join(fmt.Errorf("temporary restored host timeout postimage=%q present=%t, want %q", value, present, want), cleanupErr)
 }
