@@ -24,6 +24,7 @@ type admissionIdentity struct {
 	Runtime           string       `json:"runtime"`
 	AuthorizationGate string       `json:"authorization_gate"`
 	Trust             []trustEntry `json:"trust,omitempty"`
+	SystemTrust       string       `json:"system_trust,omitempty"`
 }
 
 type payloadRunReport struct {
@@ -56,7 +57,14 @@ func payloadAdmissionFingerprint(c *cache) (string, error) {
 	}
 	trust = bootTrustAdditions(trust)
 	sort.Slice(trust, func(i, j int) bool { return trust[i].Name < trust[j].Name })
+	systemTrust, _, err := loadSystemTrustContext(context.Background(), c)
+	if err != nil {
+		return "", err
+	}
 	identity := admissionIdentity{Runtime: canonicalRuntime.IOSVersion, AuthorizationGate: "adhoc-linker-signed-plus-product-dyld-v1", Trust: trust}
+	if systemTrust != nil {
+		identity.SystemTrust = systemTrust.Object.SHA256
+	}
 	b, err := json.Marshal(identity)
 	if err != nil {
 		return "", err

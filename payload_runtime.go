@@ -256,17 +256,24 @@ func prepareRuntimeIBEC(ibec, oldTrust, newTrust []byte) ([]byte, runtimeLayout,
 	return wrapped, layout, err
 }
 
-// preparePayloadTrust keeps the base trust cache byte-identical when there are
-// no additions.  When additions exist it updates both halves of the binding:
-// the cache's sorted cdhash table and iBEC's single SHA-384 reference to it.
-func preparePayloadTrust(images map[string][]byte, additions []payloadEntry) (runtimeLayout, error) {
+// preparePayloadTrust keeps the base trust cache byte-identical when there is
+// no complete system context or legacy addition. Otherwise it updates both
+// halves of the binding: the complete sorted table and iBEC's single SHA-384
+// reference to it.
+func preparePayloadTrust(images map[string][]byte, additions []payloadEntry, systemTrust []byte) (runtimeLayout, error) {
 	oldTrust, _, err := unwrapImage(images["trust-cache"])
 	if err != nil {
 		return runtimeLayout{}, err
 	}
 	newTrust := oldTrust
+	if len(systemTrust) != 0 {
+		newTrust, _, err = mergeSystemTrustCache(newTrust, systemTrust)
+		if err != nil {
+			return runtimeLayout{}, err
+		}
+	}
 	if len(additions) != 0 {
-		newTrust, err = extendTrustCache(oldTrust, additions)
+		newTrust, err = extendTrustCache(newTrust, additions)
 		if err != nil {
 			return runtimeLayout{}, err
 		}

@@ -62,6 +62,9 @@ go build -mod=vendor -o 15-plus-kernel-poc .
 | `go run . payload run FILE --include LIB=/usr/local/lib/LIB -- ARG...` | Include and admit a dylib dependency in the same transaction. |
 | `go run . ui import DIRECTORY` | Verify and content-address the complete MonkeyBars/iRemoteFramebuffer bundle once. |
 | `go run . ui run` | Reuse or boot the phone, sign and hot-upload the UI executable and framework, route ProductOS libraries, and launch the normal remote-screen service arguments. |
+| `go run . system-trust import StaticTrustCache.img4` | Import one complete system static-trust IMG4 and merge its whole table into the next volatile boot context. |
+| `go run . system-trust status` | Verify and report the configured complete system trust context. |
+| `go run . system-trust clear` | Clear the configured context while retaining its immutable cached object. |
 | `go run . cache gc --dry-run` | Review only the owned build/test scratch eligible for deletion. |
 | `go run . cache gc` | Delete that scratch while protecting firmware objects, device state, logs, and loader analysis. |
 | `go run . assets fetch` | Fetch and verify public Apple assets. |
@@ -90,6 +93,16 @@ go run . assets fetch
 ```
 
 The ignored `.cache/` directory holds large images, generated keys, payload additions, captures, and logs. The CLI generates SSH client and host keys for the detected ECID and installs them in the temporary environment.
+
+`system-trust import` is intentionally distinct from the legacy tab-separated
+trust-only interface. It accepts one structurally valid `trst` IMG4, retains its
+exact content identity, and merges every complete, sorted row with the base
+restore trust cache. A version-1 base table may be promoted to version 2 by
+preserving each hash/type/flags row and adding only the two defined zero fields;
+every other format mismatch fails closed. The command never accepts a projected
+hash list or selects individual binaries. The derived restore table remains
+volatile, and iBEC's existing SHA-384 trust binding is rebound to those derived
+bytes for that boot.
 
 ## Payload and internal storage
 

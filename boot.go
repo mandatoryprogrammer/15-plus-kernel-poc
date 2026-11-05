@@ -172,10 +172,15 @@ func prepareRuntime(ctx context.Context, c *cache) (map[string][]byte, runtimeLa
 		images[row.Role] = component
 	}
 	// Caller payloads are admitted by the structural CS_ADHOC|
-	// CS_LINKER_SIGNED kernel gate and transferred after SSH is available. Only
-	// legacy trust-only rows still alter the boot trust cache and iBEC binding.
+	// CS_LINKER_SIGNED kernel gate and transferred after SSH is available. A
+	// configured complete system context and legacy non-cache trust-only rows
+	// alter the volatile boot trust cache and its iBEC digest binding.
 	admissions := trustPayloadEntries(bootTrustAdditions(trustAdditions))
-	layout, err := preparePayloadTrust(images, admissions)
+	_, systemTrust, err := loadSystemTrustContext(ctx, c)
+	if err != nil {
+		return nil, runtimeLayout{}, err
+	}
+	layout, err := preparePayloadTrust(images, admissions, systemTrust)
 	if err != nil {
 		return nil, runtimeLayout{}, fmt.Errorf("prepare payload admission: %w", err)
 	}

@@ -41,7 +41,7 @@ func main() {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: 15-plus-kernel-poc shell | exec -- COMMAND | ui import DIRECTORY | ui status | ui run | payload run FILE | cache gc | doctor | reset")
+		return errors.New("usage: 15-plus-kernel-poc shell | exec -- COMMAND | ui import DIRECTORY | ui status | ui run | payload run FILE | system-trust import FILE | cache gc | doctor | reset")
 	}
 	root, err := projectRoot()
 	if err != nil {
@@ -120,6 +120,17 @@ func run(ctx context.Context, args []string) error {
 			return importTrust(cache, args[2:])
 		}
 		return errors.New("usage: trust list | trust import FILE")
+	case "system-trust":
+		if len(args) == 3 && args[1] == "import" {
+			return importSystemTrustContext(ctx, cache, args[2:])
+		}
+		if len(args) == 2 && args[1] == "status" {
+			return statusSystemTrustContext(ctx, cache)
+		}
+		if len(args) == 2 && args[1] == "clear" {
+			return clearSystemTrustContext(cache)
+		}
+		return errors.New("usage: system-trust import FILE | system-trust status | system-trust clear")
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
