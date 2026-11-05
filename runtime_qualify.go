@@ -28,11 +28,12 @@ type runtimeQualifiedTrust struct {
 }
 
 type runtimeQualifiedUI struct {
-	Schema         string `json:"schema"`
-	Files          int    `json:"files"`
-	LauncherSHA256 string `json:"launcher_sha256"`
-	ProductVersion string `json:"product_version"`
-	ProductBuild   string `json:"product_build"`
+	Schema         string    `json:"schema"`
+	Files          int       `json:"files"`
+	LauncherSHA256 string    `json:"launcher_sha256"`
+	Program        uiProgram `json:"program"`
+	ProductVersion string    `json:"product_version"`
+	ProductBuild   string    `json:"product_build"`
 }
 
 type runtimeQualifiedRoot struct {
@@ -171,8 +172,8 @@ func qualifyRuntimeInto(ctx context.Context, c *cache, productRoot string, repor
 	if err != nil {
 		return fmt.Errorf("UI profile: %w", err)
 	}
-	if profile.Schema != "15-plus-kernel-poc.ui-profile.v2" || profile.Launcher == nil {
-		return errors.New("UI profile needs an exact ProductOS root launcher")
+	if profile.Schema != "15-plus-kernel-poc.ui-profile.v3" || profile.Launcher == nil || profile.Program == nil {
+		return errors.New("UI profile needs an exact ProductOS root launcher and active program")
 	}
 	uiSystemVersion, err := uiObjectPath(c, profile, "System/Library/CoreServices/SystemVersion.plist")
 	if err != nil {
@@ -193,6 +194,7 @@ func qualifyRuntimeInto(ctx context.Context, c *cache, productRoot string, repor
 	}
 	report.UI = &runtimeQualifiedUI{
 		Schema: profile.Schema, Files: len(profile.Files), LauncherSHA256: profile.Launcher.SHA256,
+		Program:        *profile.Program,
 		ProductVersion: uiVersion, ProductBuild: uiBuild,
 	}
 

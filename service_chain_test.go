@@ -22,10 +22,11 @@ func TestServiceChainManifestAndLauncherArguments(t *testing.T) {
 	}
 	c := &cache{root: t.TempDir()}
 	profile := uiProfile{
-		Schema: "15-plus-kernel-poc.ui-profile.v2",
+		Schema: "15-plus-kernel-poc.ui-profile.v3",
 		Launcher: &uiObject{
 			Relative: uiRootLauncherName, SHA256: "launcher",
 		},
+		Program: &uiProgram{SHA256: "active-program", Size: 123, CDHash: "cdhash", Argv0: "/usr/local/bin/test-program"},
 		Files: []uiObject{
 			{Relative: uiExecutableRelative, SHA256: "monkeybars"},
 			{Relative: uiFrameworkRelative, SHA256: "framebuffer"},
@@ -37,9 +38,9 @@ func TestServiceChainManifestAndLauncherArguments(t *testing.T) {
 	}
 	want := []string{
 		filepath.Join(c.root, "objects", "launcher"), "--dest", uiRootLauncherTarget,
-		"--include", filepath.Join(c.root, "objects", "monkeybars") + "=" + uiStagedTarget,
+		"--include", filepath.Join(c.root, "objects", "active-program") + "=" + uiStagedTarget,
 		"--include", filepath.Join(c.root, "objects", "framebuffer") + "=" + uiFrameworkTarget,
-		"--", "--service-chain-v1", "appledisplayplatformd,hidd.nonui,SwitchBoard", "--", "-h",
+		"--", "--service-chain-v1", "appledisplayplatformd,hidd.nonui,SwitchBoard", "--program-v1", "/usr/local/bin/test-program", "--", "-h",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("service-chain payload arguments changed:\n got: %q\nwant: %q", got, want)
@@ -48,13 +49,13 @@ func TestServiceChainManifestAndLauncherArguments(t *testing.T) {
 
 func TestBoundedTargetCaptureAndMarkerReduction(t *testing.T) {
 	capture := &boundedTargetCapture{}
-	input := []byte("host line\nPRODUCT_SERVICE_CHAIN stage=ready count=3 exact=1\r\nCHROOT_UI_DIRFD_TRANSITION stage=exec\n")
+	input := []byte("host line\nPRODUCT_SERVICE_CHAIN stage=ready count=3 exact=1\r\nCHROOT_UI_DIRFD_TRANSITION stage=exec\nPROBE_STAGE stage=1\nPROBE_TIMEOUT elapsed_ms=10000\nPROBE_RESULT result=timeout\nPRODUCTOS_TOOLING_SMOKE_V1\n")
 	if written, err := capture.Write(input); err != nil || written != len(input) {
 		t.Fatalf("capture write=%d err=%v", written, err)
 	}
 	body, truncated := capture.snapshot()
-	markers := selectedTargetMarkers(body, "PRODUCT_SERVICE_CHAIN ", "CHROOT_UI_DIRFD_TRANSITION ")
-	if truncated || len(markers) != 2 || !markerContains(markers, "stage=ready") || !markerContains(markers, "stage=exec") {
+	markers := selectedTargetMarkers(body, "PRODUCT_SERVICE_CHAIN ", "CHROOT_UI_DIRFD_TRANSITION ", "PROBE_STAGE ", "PROBE_TIMEOUT ", "PROBE_RESULT ", "PRODUCTOS_TOOLING_SMOKE_V1")
+	if truncated || len(markers) != 6 || !markerContains(markers, "stage=ready") || !markerContains(markers, "stage=exec") || !markerContains(markers, "PROBE_STAGE") || !markerContains(markers, "PROBE_TIMEOUT") || !markerContains(markers, "PROBE_RESULT") || !markerContains(markers, "PRODUCTOS_TOOLING_SMOKE_V1") {
 		t.Fatalf("marker reduction changed: truncated=%t markers=%q", truncated, markers)
 	}
 	large := bytes.Repeat([]byte{'x'}, (1<<20)+1)

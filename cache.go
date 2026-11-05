@@ -34,6 +34,7 @@ type cache struct {
 	client    *http.Client
 	out       io.Writer
 	targetOut io.Writer
+	targetErr io.Writer
 	mu        sync.Mutex
 }
 
@@ -46,7 +47,7 @@ func newCache(root string) (*cache, error) {
 			return nil, err
 		}
 	}
-	return &cache{root: root, out: terminalOutput(os.Stderr), targetOut: os.Stdout, client: &http.Client{
+	return &cache{root: root, out: terminalOutput(os.Stderr), targetOut: os.Stdout, targetErr: os.Stderr, client: &http.Client{
 		Timeout: 2 * time.Hour,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if req.URL.Scheme != "https" {

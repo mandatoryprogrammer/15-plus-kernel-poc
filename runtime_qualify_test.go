@@ -29,7 +29,7 @@ func storeRuntimeTestObject(t *testing.T, c *cache, role string, body []byte) as
 
 func installRuntimeTestUI(t *testing.T, c *cache) {
 	t.Helper()
-	profile := uiProfile{Schema: "15-plus-kernel-poc.ui-profile.v2"}
+	profile := uiProfile{Schema: "15-plus-kernel-poc.ui-profile.v3"}
 	for index, relative := range uiBundleFiles {
 		body := []byte("ui-object-" + relative)
 		if relative == "System/Library/CoreServices/SystemVersion.plist" {
@@ -41,6 +41,16 @@ func installRuntimeTestUI(t *testing.T, c *cache) {
 	}
 	launcher := storeRuntimeTestObject(t, c, "ui-root-launcher", []byte("launcher"))
 	profile.Launcher = &uiObject{Relative: uiRootLauncherName, SHA256: launcher.SHA256, Size: launcher.Size}
+	source := filepath.Join(c.root, "runtime-test-ui-program")
+	if err := os.WriteFile(source, unsignedRuntimeMachOFixtureSize(2, 0x8000), 0600); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := preparePayload(source, uiStagedTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	program := storeRuntimeTestObject(t, c, "ui-program", prepared.Body)
+	profile.Program = &uiProgram{SHA256: program.SHA256, Size: program.Size, CDHash: prepared.Entry.CDHash, Argv0: "/usr/local/bin/runtime-test-ui"}
 	if err := writeUIProfile(c, profile); err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +98,7 @@ func TestQualifyRuntimeValidatesPreparedTrustUIAndAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !report.Qualified || len(report.PreparedRoles) != 6 || report.SystemTrust == nil || report.SystemTrust.MergedEntries != 2 || report.UI == nil || report.UI.Schema != "15-plus-kernel-poc.ui-profile.v2" || report.UI.ProductVersion != "16.0" || report.UI.ProductBuild != "20A5312i" || len(report.AdmissionFingerprint) != 64 {
+	if !report.Qualified || len(report.PreparedRoles) != 6 || report.SystemTrust == nil || report.SystemTrust.MergedEntries != 2 || report.UI == nil || report.UI.Schema != "15-plus-kernel-poc.ui-profile.v3" || report.UI.ProductVersion != "16.0" || report.UI.ProductBuild != "20A5312i" || len(report.UI.Program.SHA256) != 64 || len(report.UI.Program.CDHash) != 40 || report.UI.Program.Size <= 0 || report.UI.Program.Argv0 != "/usr/local/bin/runtime-test-ui" || len(report.AdmissionFingerprint) != 64 {
 		t.Fatalf("qualification omitted a boundary: %+v", report)
 	}
 	started, startErr := time.Parse(time.RFC3339Nano, report.StartedAt)
@@ -101,7 +111,7 @@ func TestQualifyRuntimeValidatesPreparedTrustUIAndAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stored runtimeQualificationReport
-	if err = json.Unmarshal(body, &stored); err != nil || !stored.Qualified || stored.AdmissionFingerprint != report.AdmissionFingerprint {
+	if err = json.Unmarshal(body, &stored); err != nil || !stored.Qualified || stored.AdmissionFingerprint != report.AdmissionFingerprint || stored.UI == nil || stored.UI.Program != report.UI.Program {
 		t.Fatalf("latest report changed: stored=%+v err=%v", stored, err)
 	}
 }

@@ -20,6 +20,30 @@ const (
 	targetPayloadRunner    = "/usr/local/bin/payload-runner"
 )
 
+var errPayloadExecutionTimeout = errors.New("target payload execution deadline exceeded")
+
+type payloadExecutionTimeoutKey struct{}
+
+// withPayloadExecutionTimeout records a deadline for only the final target
+// process. Boot, admission, transfer, and exact readback remain governed by
+// their own existing deadlines.
+func withPayloadExecutionTimeout(ctx context.Context, timeout time.Duration) context.Context {
+	return context.WithValue(ctx, payloadExecutionTimeoutKey{}, timeout)
+}
+
+func payloadExecutionTimeout(ctx context.Context) time.Duration {
+	timeout, _ := ctx.Value(payloadExecutionTimeoutKey{}).(time.Duration)
+	if timeout < 0 {
+		return 0
+	}
+	return timeout
+}
+
+type payloadExecutionProgress struct {
+	Transferred   bool
+	ExactReadback bool
+}
+
 type admissionIdentity struct {
 	Runtime           string       `json:"runtime"`
 	AuthorizationGate string       `json:"authorization_gate"`
@@ -217,8 +241,8 @@ func verifyPayloadReadback(ctx context.Context, c *cache, access sshAccess, entr
 	return nil
 }
 
-func runPreparedPayload(ctx context.Context, c *cache, main payloadEntry, includes []payloadEntry, environment, args []string) error {
-	return withDeviceLock(c, func() error {
+func runPreparedPayload(ctx context.Context, c *cache, main payloadEntry, includes []payloadEntry, environment, args []string) (progress payloadExecutionProgress, runErr error) {
+	runErr = withDeviceLock(c, func() error {
 		access, err := loadAccess(ctx, c)
 		if err != nil {
 			return err
@@ -257,9 +281,11 @@ func runPreparedPayload(ctx context.Context, c *cache, main payloadEntry, includ
 				return fmt.Errorf("transfer %s: %w", entry.Destination, err)
 			}
 		}
+		progress.Transferred = true
 		if err = verifyPayloadReadback(ctx, c, access, entries); err != nil {
 			return err
 		}
+		progress.ExactReadback = true
 		checkCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		err = runSSH(checkCtx, access, false, []string{"/bin/bash", "-c", "test -x " + shellQuote(runtimeMain.Destination)}, nil, io.Discard, os.Stderr)
 		cancel()
@@ -277,8 +303,24 @@ func runPreparedPayload(ctx context.Context, c *cache, main payloadEntry, includ
 		if targetOutput == nil {
 			targetOutput = os.Stdout
 		}
-		return runSSH(ctx, access, false, command, os.Stdin, targetOutput, os.Stderr)
+		targetError := c.targetErr
+		if targetError == nil {
+			targetError = os.Stderr
+		}
+		executionCtx := ctx
+		executionCancel := func() {}
+		if timeout := payloadExecutionTimeout(ctx); timeout > 0 {
+			executionCtx, executionCancel = context.WithTimeout(ctx, timeout)
+			fmt.Fprintf(c.out, "Target execution deadline: %s\n", timeout)
+		}
+		defer executionCancel()
+		executionErr := runSSH(executionCtx, access, false, command, os.Stdin, targetOutput, targetError)
+		if executionCtx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("%w after %s: %v", errPayloadExecutionTimeout, payloadExecutionTimeout(ctx), executionErr)
+		}
+		return executionErr
 	})
+	return progress, runErr
 }
 
 func parsePayloadExecutableSlotProbe(output []byte) (bool, error) {
@@ -424,10 +466,12 @@ func runPayload(ctx context.Context, c *cache, args []string) (runErr error) {
 			return fmt.Errorf("payload destination is not executable after fresh preparation: %s", missing)
 		}
 	}
-	if err = runPreparedPayload(ctx, c, main.Entry, report.Includes, environment, commandArgs); err != nil {
+	progress, executionErr := runPreparedPayload(ctx, c, main.Entry, report.Includes, environment, commandArgs)
+	report.Transferred = progress.Transferred
+	report.ExactReadback = progress.ExactReadback
+	if executionErr != nil {
+		err = executionErr
 		return err
 	}
-	report.Transferred = true
-	report.ExactReadback = true
 	return nil
 }

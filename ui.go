@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 const (
@@ -44,10 +45,18 @@ type uiObject struct {
 	Size     int64  `json:"size"`
 }
 
+type uiProgram struct {
+	SHA256 string `json:"sha256"`
+	Size   int64  `json:"size"`
+	CDHash string `json:"cdhash"`
+	Argv0  string `json:"argv0"`
+}
+
 type uiProfile struct {
 	Schema   string     `json:"schema"`
 	Files    []uiObject `json:"files"`
 	Launcher *uiObject  `json:"launcher,omitempty"`
+	Program  *uiProgram `json:"program,omitempty"`
 }
 
 func uiProfilePath(c *cache) string { return filepath.Join(c.root, "private", "ui-profile.json") }
@@ -88,7 +97,7 @@ func loadUIProfile(ctx context.Context, c *cache) (uiProfile, error) {
 		return profile, err
 	}
 	if err = json.Unmarshal(body, &profile); err != nil ||
-		(profile.Schema != "15-plus-kernel-poc.ui-profile.v1" && profile.Schema != "15-plus-kernel-poc.ui-profile.v2") ||
+		(profile.Schema != "15-plus-kernel-poc.ui-profile.v1" && profile.Schema != "15-plus-kernel-poc.ui-profile.v2" && profile.Schema != "15-plus-kernel-poc.ui-profile.v3") ||
 		len(profile.Files) != len(uiBundleFiles) {
 		return profile, errors.New("invalid UI profile")
 	}
@@ -108,7 +117,7 @@ func loadUIProfile(ctx context.Context, c *cache) (uiProfile, error) {
 			return profile, fmt.Errorf("UI profile is missing %s", relative)
 		}
 	}
-	if profile.Schema == "15-plus-kernel-poc.ui-profile.v2" {
+	if profile.Schema == "15-plus-kernel-poc.ui-profile.v2" || profile.Schema == "15-plus-kernel-poc.ui-profile.v3" {
 		if profile.Launcher == nil || profile.Launcher.Relative != uiRootLauncherName {
 			return profile, errors.New("UI profile is missing the ProductOS root launcher")
 		}
@@ -119,7 +128,46 @@ func loadUIProfile(ctx context.Context, c *cache) (uiProfile, error) {
 	} else if profile.Launcher != nil {
 		return profile, errors.New("v1 UI profile unexpectedly contains a root launcher")
 	}
+	if profile.Schema == "15-plus-kernel-poc.ui-profile.v3" {
+		if err = verifyUIProgram(ctx, c, profile.Program); err != nil {
+			return profile, err
+		}
+	} else if profile.Program != nil {
+		return profile, fmt.Errorf("%s UI profile unexpectedly contains an active program", profile.Schema)
+	}
 	return profile, nil
+}
+
+func validUIArgv0(value string) bool {
+	return len(value) > 1 && len(value) <= 4096 && filepath.IsAbs(value) && filepath.Clean(value) == value &&
+		!strings.ContainsAny(value, "\x00\r\n")
+}
+
+func verifyUIProgram(ctx context.Context, c *cache, program *uiProgram) error {
+	if program == nil || !digestPattern.MatchString(program.SHA256) || program.Size <= 0 ||
+		len(program.CDHash) != 40 || !validUIArgv0(program.Argv0) {
+		return errors.New("UI profile has an invalid active program")
+	}
+	a := asset{Role: "ui-program", SHA256: program.SHA256, Size: program.Size}
+	if err := verifyFile(ctx, c.object(a), a); err != nil {
+		return fmt.Errorf("verify active UI program: %w", err)
+	}
+	cdhash, err := inspectExecutableFile(c.object(a))
+	if err != nil {
+		return fmt.Errorf("inspect active UI program: %w", err)
+	}
+	if cdhash != program.CDHash {
+		return errors.New("active UI program CDHash mismatch")
+	}
+	return nil
+}
+
+func inspectExecutableFile(name string) (string, error) {
+	body, err := os.ReadFile(name)
+	if err != nil {
+		return "", err
+	}
+	return inspectExecutable(body)
 }
 
 func uiObjectPath(c *cache, profile uiProfile, relative string) (string, error) {
@@ -202,8 +250,13 @@ func importUIRootLauncher(ctx context.Context, c *cache, name string) error {
 	if _, err = c.store(ctx, a, bytes.NewReader(body)); err != nil {
 		return err
 	}
-	profile.Schema = "15-plus-kernel-poc.ui-profile.v2"
 	profile.Launcher = &uiObject{Relative: uiRootLauncherName, SHA256: a.SHA256, Size: a.Size}
+	program, err := prepareUIProgram(ctx, c, profile, "", uiExecutableTarget)
+	if err != nil {
+		return fmt.Errorf("prepare original MonkeyBars program: %w", err)
+	}
+	profile.Schema = "15-plus-kernel-poc.ui-profile.v3"
+	profile.Program = &program
 	if err = writeUIProfile(c, profile); err != nil {
 		return err
 	}
@@ -211,18 +264,96 @@ func importUIRootLauncher(ctx context.Context, c *cache, name string) error {
 	return nil
 }
 
-func uiPayloadRunArgumentsMode(c *cache, profile uiProfile, launcherMode string, programArgs []string) ([]string, error) {
+func prepareUIProgram(ctx context.Context, c *cache, profile uiProfile, source, argv0 string) (uiProgram, error) {
+	var result uiProgram
+	if !validUIArgv0(argv0) {
+		return result, errors.New("UI program argv0 must be a clean absolute path of at most 4096 bytes without NUL, CR, or LF")
+	}
+	if source == "" {
+		var err error
+		source, err = uiObjectPath(c, profile, uiExecutableRelative)
+		if err != nil {
+			return result, err
+		}
+	}
+	prepared, err := preparePayload(source, uiStagedTarget)
+	if err != nil {
+		return result, fmt.Errorf("prepare UI program: %w", err)
+	}
+	if prepared.FileType != macho.TypeExec {
+		return result, errors.New("UI program input is not an executable")
+	}
+	a := asset{
+		Role: "ui-program", SHA256: prepared.Entry.SHA256, Size: prepared.Entry.Size,
+		Recipe: "Deterministically normalized active ProductOS UI program", Compatibility: "ProductOS remote UI",
+	}
+	if _, err = c.store(ctx, a, bytes.NewReader(prepared.Body)); err != nil {
+		return result, err
+	}
+	return uiProgram{SHA256: a.SHA256, Size: a.Size, CDHash: prepared.Entry.CDHash, Argv0: argv0}, nil
+}
+
+func importUIProgram(ctx context.Context, c *cache, name, argv0 string) error {
+	profile, err := loadUIProfile(ctx, c)
+	if err != nil {
+		return err
+	}
+	if profile.Launcher == nil {
+		return errors.New("UI root launcher is not imported; run: 15-plus-kernel-poc ui launcher import FILE")
+	}
+	name, err = filepath.Abs(name)
+	if err != nil {
+		return err
+	}
+	if argv0 == "" {
+		argv0 = uiStagedTarget
+	}
+	program, err := prepareUIProgram(ctx, c, profile, name, argv0)
+	if err != nil {
+		return err
+	}
+	profile.Schema = "15-plus-kernel-poc.ui-profile.v3"
+	profile.Program = &program
+	if err = writeUIProfile(c, profile); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.out, "Imported active UI program (%d bytes, cdhash %s, argv0 %s); bundle and launcher unchanged.\n", program.Size, program.CDHash, program.Argv0)
+	return nil
+}
+
+func resetUIProgram(ctx context.Context, c *cache) error {
+	profile, err := loadUIProfile(ctx, c)
+	if err != nil {
+		return err
+	}
+	if profile.Launcher == nil {
+		return errors.New("UI root launcher is not imported; run: 15-plus-kernel-poc ui launcher import FILE")
+	}
+	program, err := prepareUIProgram(ctx, c, profile, "", uiExecutableTarget)
+	if err != nil {
+		return err
+	}
+	profile.Schema = "15-plus-kernel-poc.ui-profile.v3"
+	profile.Program = &program
+	if err = writeUIProfile(c, profile); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.out, "Reset active UI program to the preserved MonkeyBars bundle object (%d bytes, cdhash %s).\n", program.Size, program.CDHash)
+	return nil
+}
+
+func uiPayloadRunArgumentsMode(c *cache, profile uiProfile, launcherMode string, modeArgs, programArgs []string) ([]string, error) {
 	if profile.Launcher == nil || profile.Launcher.Relative != uiRootLauncherName {
 		return nil, errors.New("UI root launcher is not imported; run: 15-plus-kernel-poc ui launcher import FILE")
 	}
 	if launcherMode == "" {
 		return nil, errors.New("UI launcher mode is empty")
 	}
-	launcher := c.object(asset{SHA256: profile.Launcher.SHA256})
-	executable, err := uiObjectPath(c, profile, uiExecutableRelative)
-	if err != nil {
-		return nil, err
+	if profile.Schema != "15-plus-kernel-poc.ui-profile.v3" || profile.Program == nil {
+		return nil, errors.New("active UI program is not configured; run: 15-plus-kernel-poc ui program reset")
 	}
+	launcher := c.object(asset{SHA256: profile.Launcher.SHA256})
+	executable := c.object(asset{SHA256: profile.Program.SHA256})
 	framework, err := uiObjectPath(c, profile, uiFrameworkRelative)
 	if err != nil {
 		return nil, err
@@ -233,11 +364,13 @@ func uiPayloadRunArgumentsMode(c *cache, profile uiProfile, launcherMode string,
 		"--include", framework + "=" + uiFrameworkTarget,
 		"--", launcherMode,
 	}
+	runArgs = append(runArgs, modeArgs...)
+	runArgs = append(runArgs, "--program-v1", profile.Program.Argv0, "--")
 	return append(runArgs, programArgs...), nil
 }
 
 func uiPayloadRunArguments(c *cache, profile uiProfile, programArgs []string) ([]string, error) {
-	return uiPayloadRunArgumentsMode(c, profile, uiRootLauncherMode, programArgs)
+	return uiPayloadRunArgumentsMode(c, profile, uiRootLauncherMode, nil, programArgs)
 }
 
 func uiLauncherRunArguments(c *cache, profile uiProfile, launcherArgs []string) ([]string, error) {
@@ -268,7 +401,7 @@ func runUI(ctx context.Context, c *cache, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(c.out, "Launching imported MonkeyBars UI with automatic signing, exact staging, and a child-only ProductOS root")
+	fmt.Fprintf(c.out, "Launching active UI program %s with automatic signing, exact staging, and a child-only ProductOS root\n", profile.Program.SHA256)
 	return runPayload(ctx, c, runArgs)
 }
 
@@ -278,6 +411,18 @@ func uiCommand(ctx context.Context, c *cache, args []string) error {
 	}
 	if len(args) == 3 && args[0] == "launcher" && args[1] == "import" {
 		return importUIRootLauncher(ctx, c, args[2])
+	}
+	if len(args) >= 2 && args[0] == "program" && args[1] == "import" {
+		if len(args) == 3 {
+			return importUIProgram(ctx, c, args[2], "")
+		}
+		if len(args) == 5 && args[3] == "--argv0" {
+			return importUIProgram(ctx, c, args[2], args[4])
+		}
+		return errors.New("usage: ui program import FILE [--argv0 VALUE]")
+	}
+	if len(args) == 2 && args[0] == "program" && args[1] == "reset" {
+		return resetUIProgram(ctx, c)
 	}
 	if len(args) >= 1 && args[0] == "run" {
 		return runUI(ctx, c, args[1:])
@@ -298,10 +443,12 @@ func uiCommand(ctx context.Context, c *cache, args []string) error {
 		}
 		if profile.Launcher == nil {
 			fmt.Fprintf(c.out, "UI bundle ready: %d exact objects; root launcher not imported\n", len(profile.Files))
+		} else if profile.Program == nil {
+			fmt.Fprintf(c.out, "UI bundle ready: %d exact objects plus ProductOS root launcher; active program not configured\n", len(profile.Files))
 		} else {
-			fmt.Fprintf(c.out, "UI bundle ready: %d exact objects plus ProductOS root launcher; use: 15-plus-kernel-poc ui run\n", len(profile.Files))
+			fmt.Fprintf(c.out, "UI bundle ready: %d exact objects plus ProductOS root launcher; active program sha256=%s cdhash=%s argv0=%s; use: 15-plus-kernel-poc ui run\n", len(profile.Files), profile.Program.SHA256, profile.Program.CDHash, profile.Program.Argv0)
 		}
 		return nil
 	}
-	return errors.New("usage: ui import DIRECTORY | ui launcher import FILE | ui status | ui run [-- MONKEYBARS-ARG...] | ui capture | ui tap X Y | ui verify [--x X --y Y --settle DURATION]")
+	return errors.New("usage: ui import DIRECTORY | ui launcher import FILE | ui program import FILE [--argv0 VALUE] | ui program reset | ui status | ui run [-- PROGRAM-ARG...] | ui capture | ui tap X Y | ui verify [--x X --y Y --settle DURATION]")
 }

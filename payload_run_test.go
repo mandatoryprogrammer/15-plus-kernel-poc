@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParsePayloadRunOwnsArgumentsAndIncludes(t *testing.T) {
@@ -34,6 +35,23 @@ func TestParsePayloadRunOwnsArgumentsAndIncludes(t *testing.T) {
 	}
 	if _, _, err = splitPayloadInclude("lib=/tmp/lib"); err == nil {
 		t.Fatal("unsafe include destination accepted")
+	}
+}
+
+func TestPayloadExecutionTimeoutAppliesOnlyWhenExplicit(t *testing.T) {
+	base := context.Background()
+	if timeout := payloadExecutionTimeout(base); timeout != 0 {
+		t.Fatalf("plain context has execution timeout %s", timeout)
+	}
+	bounded := withPayloadExecutionTimeout(base, 7*time.Second)
+	if timeout := payloadExecutionTimeout(bounded); timeout != 7*time.Second {
+		t.Fatalf("execution timeout=%s, want 7s", timeout)
+	}
+	if _, ok := bounded.Deadline(); ok {
+		t.Fatal("execution metadata unexpectedly shortened boot/transfer context")
+	}
+	if timeout := payloadExecutionTimeout(withPayloadExecutionTimeout(base, -time.Second)); timeout != 0 {
+		t.Fatalf("negative execution timeout was accepted: %s", timeout)
 	}
 }
 

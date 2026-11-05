@@ -62,6 +62,8 @@ go build -mod=vendor -o 15-plus-kernel-poc .
 | `go run . payload run FILE -- ARG...` | Import/sign, trust, boot or reuse, verify, and execute one caller-provided binary end to end. |
 | `go run . payload run FILE --include LIB=/usr/local/lib/LIB -- ARG...` | Include and admit a dylib dependency in the same transaction. |
 | `go run . ui import DIRECTORY` | Verify and content-address the complete MonkeyBars/iRemoteFramebuffer bundle once. |
+| `go run . ui program import FILE [--argv0 VALUE]` | Normalize and select any compatible executable as the active UI program without changing the imported bundle or launcher. |
+| `go run . ui program reset` | Select the preserved MonkeyBars bundle executable again with its legacy argv[0]. |
 | `go run . ui run` | Reuse or boot the phone, sign and hot-upload the UI executable and framework, route ProductOS libraries, and launch the normal remote-screen service arguments. |
 | `go run . service-chain run default` | Start the tracked ProductOS display-service graph in declared order, demand-activate on-demand jobs, verify residency, and launch the UI with reverse-order rollback on a partial failure. |
 | `go run . mach-service probe SERVICE` | Perform one bounded root-bootstrap lookup and activation message, then release the acquired Mach right exactly. |
@@ -208,6 +210,26 @@ normalizes signatures, stages the caller-owned framework, sets ProductOS root,
 framework, and shared-cache locations, and uses MonkeyBars' normal screen
 service arguments. Use `ui run -- -h` for a bounded help probe.
 
+The UI profile is also the audited selection point for a research program. The
+active v3 `program` record binds the exact normalized SHA-256, byte size,
+CDHash, and target `argv[0]`. Importing a candidate stores the normalized bytes
+that were actually measured; it never replaces or edits the original bundle
+object or ProductOS root launcher:
+
+```sh
+go run . ui program import /path/to/display-probe
+go run . ui program import /path/to/display-probe --argv0 /usr/local/bin/display-probe
+go run . ui run -- probe-argument
+```
+
+With no override, `argv[0]` is the real staged identity
+`/usr/local/libexec/productos-ui`. `ui program reset` deterministically prepares
+the preserved MonkeyBars object again and restores its historical
+`/usr/local/bin/monkeybars` identity. Direct and service-chain launches both use
+the same explicit `--program-v1 ARGV0 -- PROGRAM_ARGS...` launcher protocol, so
+the selected program is not inferred from a file size, probe argument, or
+hard-coded CDHash.
+
 The tracked default display chain is declarative:
 
 ```sh
@@ -236,7 +258,8 @@ down/up, and a second nonblack frame with a different RGBA SHA-256. Each run has
 its own atomic evidence directory. At most ten runs younger than seven days are
 retained; older tool-owned frame directories are removed before a new run.
 
-Before switching ProductOS roots or trust material, qualify the tuple once:
+Before switching ProductOS roots, trust material, or active UI programs,
+qualify the tuple once:
 
 ```sh
 go run . runtime qualify
@@ -254,6 +277,11 @@ source version; it is not incorrectly required to equal the newer ProductOS
 root. Target indexing records symlinks without following them, explicitly
 records the APFS root `.file` metadata skip, and prunes superseded index JSON
 automatically.
+
+Runtime qualification requires a v3 UI profile and reports the active
+program's SHA-256, size, CDHash, and argv[0] alongside the immutable bundle and
+launcher identity. This makes a later service-chain report traceable to the
+exact executable contract selected before device contact.
 
 Run `cache gc --dry-run` to review disposable test/build scratch, then `cache
 gc` to remove it. High-level payload runs also prune abandoned files older than
