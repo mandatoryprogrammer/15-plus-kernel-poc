@@ -201,3 +201,19 @@ func TestAdmissionResetRetriesExactlyOnce(t *testing.T) {
 		t.Fatalf("bounded failed retry attempts=%d err=%v", attempts, err)
 	}
 }
+
+func TestPayloadExecutableSlotProbeFailsClosed(t *testing.T) {
+	ready, err := parsePayloadExecutableSlotProbe([]byte("ready\n"))
+	if err != nil || !ready {
+		t.Fatalf("ready probe ready=%t err=%v", ready, err)
+	}
+	ready, err = parsePayloadExecutableSlotProbe([]byte("unprepared\n"))
+	if err != nil || ready {
+		t.Fatalf("unprepared probe ready=%t err=%v", ready, err)
+	}
+	for _, output := range [][]byte{nil, []byte("ready"), []byte("ready\nunprepared\n"), []byte("unknown\n")} {
+		if ready, err = parsePayloadExecutableSlotProbe(output); err == nil || ready {
+			t.Fatalf("ambiguous probe %q accepted: ready=%t err=%v", output, ready, err)
+		}
+	}
+}

@@ -277,6 +277,46 @@ func runPreparedPayload(ctx context.Context, c *cache, main payloadEntry, includ
 	})
 }
 
+func parsePayloadExecutableSlotProbe(output []byte) (bool, error) {
+	switch string(output) {
+	case "ready\n":
+		return true, nil
+	case "unprepared\n":
+		return false, nil
+	default:
+		return false, fmt.Errorf("unexpected executable-slot probe output %q", output)
+	}
+}
+
+func firstUnpreparedPayloadSlot(ctx context.Context, c *cache, includes []payloadEntry) (string, error) {
+	access, err := loadAccess(ctx, c)
+	if err != nil {
+		return "", err
+	}
+	destinations := []string{targetPayloadRunner}
+	for _, include := range includes {
+		destinations = append(destinations, include.Destination)
+	}
+	for _, destination := range destinations {
+		probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		var output bytes.Buffer
+		command := "if test -x " + shellQuote(destination) + "; then printf 'ready\\n'; else printf 'unprepared\\n'; fi"
+		err = runSSH(probeCtx, access, false, []string{"/bin/bash", "-c", command}, nil, &output, io.Discard)
+		cancel()
+		if err != nil {
+			return "", fmt.Errorf("probe executable payload slot %s: %w", destination, err)
+		}
+		ready, parseErr := parsePayloadExecutableSlotProbe(output.Bytes())
+		if parseErr != nil {
+			return "", fmt.Errorf("probe executable payload slot %s: %w", destination, parseErr)
+		}
+		if !ready {
+			return destination, nil
+		}
+	}
+	return "", nil
+}
+
 // runPayload is the single high-level path for a caller-provided executable.
 // It owns signing, CDHash derivation, trust composition, boot/reuse selection,
 // exact target readback, and argument-safe execution.
@@ -355,6 +395,30 @@ func runPayload(ctx context.Context, c *cache, args []string) (runErr error) {
 	}
 	if !runningAdmissionMatches(ctx, c, fingerprint) {
 		return errors.New("running target admission receipt does not match the prepared payload plan")
+	}
+	missing, err := firstUnpreparedPayloadSlot(ctx, c, report.Includes)
+	if err != nil {
+		return err
+	}
+	if missing != "" {
+		fmt.Fprintf(c.out, "Payload destination %s is not an executable pre-created slot; restarting once to materialize the current payload plan\n", missing)
+		if err = retryAdmissionReset(c.out, func() error { return resetToRecovery(ctx, c) }); err != nil {
+			return err
+		}
+		report.EnvironmentReused = false
+		if err = smartExec(ctx, c, []string{"/bin/bash", "-c", "exit 0"}); err != nil {
+			return err
+		}
+		if !runningAdmissionMatches(ctx, c, fingerprint) {
+			return errors.New("fresh target admission receipt does not match the prepared payload plan")
+		}
+		missing, err = firstUnpreparedPayloadSlot(ctx, c, report.Includes)
+		if err != nil {
+			return err
+		}
+		if missing != "" {
+			return fmt.Errorf("payload destination is not executable after fresh preparation: %s", missing)
+		}
 	}
 	if err = runPreparedPayload(ctx, c, main.Entry, report.Includes, environment, commandArgs); err != nil {
 		return err
