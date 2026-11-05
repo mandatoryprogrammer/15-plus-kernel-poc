@@ -20,8 +20,16 @@ type restoredHostTimeoutPreimage struct {
 
 type restoredHostTimeoutLeaseKey struct{}
 
+type restoredHostTimeoutLeaseOrigin string
+
+const (
+	restoredHostTimeoutFreshBootOrigin restoredHostTimeoutLeaseOrigin = "fresh-boot-handoff"
+	restoredHostTimeoutReusedOrigin    restoredHostTimeoutLeaseOrigin = "reused-environment-ssh"
+)
+
 type restoredHostTimeoutLease struct {
 	preimage restoredHostTimeoutPreimage
+	origin   restoredHostTimeoutLeaseOrigin
 	active   bool
 }
 
@@ -35,7 +43,7 @@ func restoredHostTimeoutLeaseFromContext(ctx context.Context) *restoredHostTimeo
 	return lease
 }
 
-func (lease *restoredHostTimeoutLease) bind(preimage restoredHostTimeoutPreimage) error {
+func (lease *restoredHostTimeoutLease) bind(preimage restoredHostTimeoutPreimage, origin restoredHostTimeoutLeaseOrigin) error {
 	if lease == nil {
 		return errors.New("nil restored host timeout lease")
 	}
@@ -45,7 +53,11 @@ func (lease *restoredHostTimeoutLease) bind(preimage restoredHostTimeoutPreimage
 	if err := preimage.validate(); err != nil {
 		return err
 	}
+	if origin != restoredHostTimeoutFreshBootOrigin && origin != restoredHostTimeoutReusedOrigin {
+		return fmt.Errorf("invalid restored host timeout lease origin %q", origin)
+	}
 	lease.preimage = preimage
+	lease.origin = origin
 	lease.active = true
 	return nil
 }
@@ -57,12 +69,58 @@ func (lease *restoredHostTimeoutLease) current() (restoredHostTimeoutPreimage, b
 	return lease.preimage, true
 }
 
+func (lease *restoredHostTimeoutLease) source() restoredHostTimeoutLeaseOrigin {
+	if lease == nil || !lease.active {
+		return ""
+	}
+	return lease.origin
+}
+
 func (lease *restoredHostTimeoutLease) clear() {
 	if lease == nil {
 		return
 	}
 	lease.preimage = restoredHostTimeoutPreimage{}
+	lease.origin = ""
 	lease.active = false
+}
+
+func acquireRestoredHostTimeoutLease(
+	lease *restoredHostTimeoutLease,
+	read func() (string, bool, error),
+	set func() error,
+	restore func(restoredHostTimeoutPreimage) error,
+) error {
+	if _, active := lease.current(); active {
+		return nil
+	}
+	value, present, err := read()
+	if err != nil {
+		return err
+	}
+	preimage := restoredHostTimeoutPreimage{Value: value, Present: present}
+	if err = lease.bind(preimage, restoredHostTimeoutReusedOrigin); err != nil {
+		return err
+	}
+	restoreAfterError := func(cause error) error {
+		cleanupErr := restore(preimage)
+		if cleanupErr == nil {
+			lease.clear()
+		}
+		return errors.Join(cause, cleanupErr)
+	}
+	if err = set(); err != nil {
+		return restoreAfterError(fmt.Errorf("set reused-environment restored host timeout: %w", err))
+	}
+	want := fmt.Sprint(restoredHostStartTimeoutSeconds)
+	value, present, err = read()
+	if err != nil {
+		return restoreAfterError(fmt.Errorf("read reused-environment restored host timeout postimage: %w", err))
+	}
+	if !present || value != want {
+		return restoreAfterError(fmt.Errorf("reused-environment restored host timeout postimage=%q present=%t, want %q", value, present, want))
+	}
+	return nil
 }
 
 func restoredHostTimeoutSetCommand() string {

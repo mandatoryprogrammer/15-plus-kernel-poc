@@ -408,6 +408,7 @@ func restoreRestoredHostTimeoutLease(c *cache, lease *restoredHostTimeoutLease) 
 	if !active {
 		return nil
 	}
+	origin := lease.source()
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	err := withDeviceLock(c, func() error {
@@ -421,8 +422,39 @@ func restoreRestoredHostTimeoutLease(c *cache, lease *restoredHostTimeoutLease) 
 		return err
 	}
 	lease.clear()
-	fmt.Fprintf(c.out, "Temporary restored host start timeout inverse verified %s after bounded payload operation\n", preimage.description())
+	fmt.Fprintf(c.out, "Temporary restored host start timeout inverse verified %s after bounded payload operation origin=%s\n", preimage.description(), origin)
 	return nil
+}
+
+func acquireRestoredHostTimeoutLeaseOverSSH(ctx context.Context, c *cache, lease *restoredHostTimeoutLease) error {
+	if _, active := lease.current(); active {
+		return nil
+	}
+	return withDeviceLock(c, func() error {
+		acquireCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		defer cancel()
+		access, err := loadAccess(acquireCtx, c)
+		if err != nil {
+			return err
+		}
+		read := func() (string, bool, error) {
+			return readRestoredHostTimeoutOverSSH(acquireCtx, access)
+		}
+		set := func() error {
+			return runSSH(acquireCtx, access, false, []string{"/bin/bash", "-c", restoredHostTimeoutSetCommand()}, nil, io.Discard, os.Stderr)
+		}
+		restore := func(preimage restoredHostTimeoutPreimage) error {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cleanupCancel()
+			return restoreRestoredHostTimeoutOverSSH(cleanupCtx, access, preimage)
+		}
+		if err = acquireRestoredHostTimeoutLease(lease, read, set, restore); err != nil {
+			return err
+		}
+		preimage, _ := lease.current()
+		fmt.Fprintf(c.out, "Temporary restored host start timeout acquired over authenticated SSH: preimage=%s postimage=%d inverse=restore-after-bounded-operation origin=%s\n", preimage.description(), restoredHostStartTimeoutSeconds, lease.source())
+		return nil
+	})
 }
 
 func connectSSH(ctx context.Context, c *cache, terminal bool, command []string, wait bool, timeoutPreimage *restoredHostTimeoutPreimage) error {
@@ -458,7 +490,7 @@ func connectSSH(ctx context.Context, c *cache, terminal bool, command []string, 
 			return fmt.Errorf("apply authenticated SSH NVRAM cleanup: %w", err)
 		}
 		if lease := restoredHostTimeoutLeaseFromContext(ctx); lease != nil {
-			if err = lease.bind(*timeoutPreimage); err != nil {
+			if err = lease.bind(*timeoutPreimage, restoredHostTimeoutFreshBootOrigin); err != nil {
 				return err
 			}
 			readbackCtx, readbackCancel := context.WithTimeout(ctx, 8*time.Second)

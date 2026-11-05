@@ -89,7 +89,7 @@ func TestRestoredHostTimeoutPreimageRejectsNonNumericValue(t *testing.T) {
 	}
 }
 
-func TestRestoredHostTimeoutLeaseOwnsExactPreimage(t *testing.T) {
+func TestRestoredHostTimeoutLeaseFreshBootHandoff(t *testing.T) {
 	if lease := restoredHostTimeoutLeaseFromContext(context.Background()); lease != nil {
 		t.Fatal("plain context unexpectedly contains a restored host timeout lease")
 	}
@@ -101,21 +101,92 @@ func TestRestoredHostTimeoutLeaseOwnsExactPreimage(t *testing.T) {
 		t.Fatal("new restored host timeout lease is active")
 	}
 	preimage := restoredHostTimeoutPreimage{Value: "0", Present: true}
-	if err := lease.bind(preimage); err != nil {
+	if err := lease.bind(preimage, restoredHostTimeoutFreshBootOrigin); err != nil {
 		t.Fatalf("bind exact preimage: %v", err)
 	}
 	got, active := lease.current()
 	if !active || got != preimage {
 		t.Fatalf("active lease=%t preimage=%#v, want %#v", active, got, preimage)
 	}
-	if err := lease.bind(restoredHostTimeoutPreimage{}); err == nil {
+	if lease.source() != restoredHostTimeoutFreshBootOrigin {
+		t.Fatalf("lease origin=%q, want %q", lease.source(), restoredHostTimeoutFreshBootOrigin)
+	}
+	if err := lease.bind(restoredHostTimeoutPreimage{}, restoredHostTimeoutReusedOrigin); err == nil {
 		t.Fatal("active lease accepted a second preimage")
 	}
 	lease.clear()
 	if _, active = lease.current(); active {
 		t.Fatal("cleared restored host timeout lease remained active")
 	}
-	if err := lease.bind(restoredHostTimeoutPreimage{}); err != nil {
-		t.Fatalf("rebind after exact cleanup: %v", err)
+	if lease.source() != "" {
+		t.Fatalf("cleared lease retained origin %q", lease.source())
+	}
+}
+
+func TestRestoredHostTimeoutLeaseReusedEnvironmentAcquisition(t *testing.T) {
+	lease := &restoredHostTimeoutLease{}
+	readCount := 0
+	setCount := 0
+	restoreCount := 0
+	read := func() (string, bool, error) {
+		readCount++
+		if readCount == 1 {
+			return "", false, nil
+		}
+		return "60", true, nil
+	}
+	set := func() error {
+		setCount++
+		return nil
+	}
+	restore := func(restoredHostTimeoutPreimage) error {
+		restoreCount++
+		return nil
+	}
+	if err := acquireRestoredHostTimeoutLease(lease, read, set, restore); err != nil {
+		t.Fatalf("acquire reused-environment lease: %v", err)
+	}
+	preimage, active := lease.current()
+	if !active || preimage != (restoredHostTimeoutPreimage{}) {
+		t.Fatalf("active=%t preimage=%#v, want exact absence", active, preimage)
+	}
+	if lease.source() != restoredHostTimeoutReusedOrigin {
+		t.Fatalf("lease origin=%q, want %q", lease.source(), restoredHostTimeoutReusedOrigin)
+	}
+	if readCount != 2 || setCount != 1 || restoreCount != 0 {
+		t.Fatalf("read=%d set=%d restore=%d, want 2/1/0", readCount, setCount, restoreCount)
+	}
+	if err := acquireRestoredHostTimeoutLease(lease, read, set, restore); err != nil {
+		t.Fatalf("reacquire active lease: %v", err)
+	}
+	if readCount != 2 || setCount != 1 || restoreCount != 0 {
+		t.Fatalf("active reacquisition performed I/O: read=%d set=%d restore=%d", readCount, setCount, restoreCount)
+	}
+}
+
+func TestRestoredHostTimeoutLeaseReusedEnvironmentFailureRestoresPreimage(t *testing.T) {
+	lease := &restoredHostTimeoutLease{}
+	readCount := 0
+	preimage := restoredHostTimeoutPreimage{Value: "0", Present: true}
+	read := func() (string, bool, error) {
+		readCount++
+		if readCount == 1 {
+			return preimage.Value, preimage.Present, nil
+		}
+		return "10", true, nil
+	}
+	var restored restoredHostTimeoutPreimage
+	err := acquireRestoredHostTimeoutLease(lease, read, func() error { return nil }, func(got restoredHostTimeoutPreimage) error {
+		restored = got
+		return nil
+	})
+	if err == nil {
+		t.Fatal("invalid reused-environment postimage was accepted")
+	}
+	if restored != preimage {
+		t.Fatalf("restored preimage=%#v, want %#v", restored, preimage)
+	}
+	if _, active := lease.current(); active {
+		t.Fatal("lease remained active after verified inverse")
 	}
 }

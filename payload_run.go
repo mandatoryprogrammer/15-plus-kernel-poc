@@ -463,6 +463,11 @@ func runPayload(ctx context.Context, c *cache, args []string) (runErr error) {
 	}()
 	matching := runningAdmissionMatches(ctx, c, fingerprint)
 	report.EnvironmentReused = matching
+	if matching {
+		if err = acquireRestoredHostTimeoutLeaseOverSSH(ctx, c, timeoutLease); err != nil {
+			return fmt.Errorf("acquire restored host timeout for reused environment: %w", err)
+		}
+	}
 	if !matching && probeSSH(ctx, c) == nil {
 		fmt.Fprintln(c.out, "Running environment has a different admission set; restarting to apply the new trust plan")
 		if err = restoreRestoredHostTimeoutLease(c, timeoutLease); err != nil {
@@ -477,6 +482,9 @@ func runPayload(ctx context.Context, c *cache, args []string) (runErr error) {
 	// a separate exact readback below.
 	if err = smartExec(ctx, c, []string{"/bin/bash", "-c", "exit 0"}); err != nil {
 		return err
+	}
+	if err = acquireRestoredHostTimeoutLeaseOverSSH(ctx, c, timeoutLease); err != nil {
+		return fmt.Errorf("acquire restored host timeout after environment preparation: %w", err)
 	}
 	if !runningAdmissionMatches(ctx, c, fingerprint) {
 		return errors.New("running target admission receipt does not match the prepared payload plan")
@@ -496,6 +504,9 @@ func runPayload(ctx context.Context, c *cache, args []string) (runErr error) {
 		report.EnvironmentReused = false
 		if err = smartExec(ctx, c, []string{"/bin/bash", "-c", "exit 0"}); err != nil {
 			return err
+		}
+		if err = acquireRestoredHostTimeoutLeaseOverSSH(ctx, c, timeoutLease); err != nil {
+			return fmt.Errorf("acquire restored host timeout after payload-slot reboot: %w", err)
 		}
 		if !runningAdmissionMatches(ctx, c, fingerprint) {
 			return errors.New("fresh target admission receipt does not match the prepared payload plan")
