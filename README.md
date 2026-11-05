@@ -58,6 +58,8 @@ go build -mod=vendor -o 15-plus-kernel-poc .
 | `go run . payload list` | List the base payload and user additions separately. |
 | `go run . payload add FILE` | Add a compatible executable as `/usr/local/bin/FILE`. |
 | `go run . payload add FILE --dest /usr/local/bin/NAME` | Select its destination. |
+| `go run . payload run FILE -- ARG...` | Import/sign, trust, boot or reuse, verify, and execute one caller-provided binary end to end. |
+| `go run . payload run FILE --include LIB=/usr/local/lib/LIB -- ARG...` | Include and admit a dylib dependency in the same transaction. |
 | `go run . assets fetch` | Fetch and verify public Apple assets. |
 | `go run . assets import bootstrap DIR` | Import the prepared, board-portable runtime objects. |
 | `go run . doctor` | Validate the Mac, phone, Recovery USB, and probe identities. |
@@ -100,6 +102,33 @@ Omit `--dest` to use the source filename under `/usr/local/bin/`. The command ac
 After XNU starts, the CLI reads `AppleAPFSVolume` records from the device registry. Each record must name one valid device. The CLI recognizes System, Data, xART, Baseband data, Installer, Hardware, Preboot, and Update. It mounts each present role with `rdonly,nobrowse` below `/mnt/iphone/` and checks the result against the mount table.
 
 The CLI does not guess missing roles, slice numbers, or property order. It reports unknown roles and leaves them unmounted until the code defines a safe path. It also skips volumes that need unavailable SEP-backed keys. Data is commonly such a volume. The shell remains usable, and `/mnt/iphone/system` exposes the installed system.
+
+For the normal research loop, use the higher-level command instead of manually
+sequencing `payload add`, a reset, boot, trust-cache edits, upload, and `exec`:
+
+```sh
+go run . payload run /path/to/tool --dest /usr/local/bin/tool -- caller-argument
+```
+
+`payload run` verifies or deterministically ad-hoc signs the Mach-O, adds a
+missing `LC_UUID` in reserved header padding, recomputes the affected
+CodeDirectory page hashes, derives the CDHash, updates the temporary trust
+cache and iBEC binding, and records a fingerprint for the complete admission
+set. It reuses a live target only when the target's volatile receipt matches
+that fingerprint. Otherwise it returns the board to Recovery and performs the
+normal tethered boot. Before execution, it reads every installed byte back over
+authenticated SSH and compares it with the verified host object. Arguments are
+sent as an SSH argument vector rather than interpolated into a shell command.
+
+Use repeated `--include FILE=/usr/local/lib/NAME` or
+`--include FILE=/usr/local/libexec/NAME` options for caller-provided Mach-O
+dependencies. System dylib paths remain the responsibility of the selected
+runtime. The latest structured result replaces
+`.cache/private/payload-run-latest.json`; successful unchanged reruns reuse the
+running phone without a boot. Content objects created by the payload importer
+are indexed and removed automatically after replacement or `payload remove`,
+while prepared boot objects and pre-existing cache content are never eligible
+for that cleanup.
 
 ## Boot process
 

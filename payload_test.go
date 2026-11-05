@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
+	"debug/macho"
 	"encoding/binary"
 	"strings"
 	"testing"
@@ -202,9 +203,13 @@ func TestPackedPlatformVersionComesFromRuntimeProfile(t *testing.T) {
 
 // A minimal synthetic iOS Mach-O: two load commands, one signed code page.
 func signedFixture(platform uint32) []byte {
+	return signedFixtureType(platform, macho.TypeExec)
+}
+
+func signedFixtureType(platform uint32, fileType macho.Type) []byte {
 	b := make([]byte, 80+20+44+32)
 	le, be := binary.LittleEndian, binary.BigEndian
-	for i, v := range []uint32{0xfeedfacf, 0x100000c, 0, 2, 2, 40, 0, 0, 0x32, 24, platform, 0x1a0000, 0x1a0000, 0, 0x1d, 16, 80, 96} {
+	for i, v := range []uint32{0xfeedfacf, 0x100000c, 0, uint32(fileType), 2, 40, 0, 0, 0x32, 24, platform, 0x1a0000, 0x1a0000, 0, 0x1d, 16, 80, 96} {
 		le.PutUint32(b[i*4:], v)
 	}
 	sig := b[80:]
@@ -226,6 +231,33 @@ func signedFixture(platform uint32) []byte {
 	h := sha256.Sum256(b[:80])
 	copy(cd[44:], h[:])
 	return b
+}
+
+func TestSignedDylibArchitectureAndCodePages(t *testing.T) {
+	b := signedFixtureType(2, macho.TypeDylib)
+	hash, err := inspectExecutable(b)
+	if err != nil || len(hash) != 40 {
+		t.Fatalf("valid iOS dylib: %s %v", hash, err)
+	}
+	if _, err := inspectExecutable(signedFixtureType(2, macho.TypeBundle)); err == nil {
+		t.Fatal("Mach-O bundle accepted as a payload trust input")
+	}
+	b[73] ^= 1
+	if _, err := inspectExecutable(b); err == nil {
+		t.Fatal("modified signed dylib page accepted")
+	}
+}
+
+func TestSignedDynamicLinkerArchitectureAndCodePages(t *testing.T) {
+	b := signedFixtureType(2, machoTypeDylinker)
+	hash, err := inspectExecutable(b)
+	if err != nil || len(hash) != 40 {
+		t.Fatalf("valid iOS dynamic linker: %s %v", hash, err)
+	}
+	b[73] ^= 1
+	if _, err := inspectExecutable(b); err == nil {
+		t.Fatal("modified signed dynamic-linker page accepted")
+	}
 }
 
 func TestExecutableArchitectureAndCodePages(t *testing.T) {
@@ -258,20 +290,59 @@ func TestExecutableArchitectureAndCodePages(t *testing.T) {
 }
 
 func TestNativeAdHocSigning(t *testing.T) {
-	b := make([]byte, 96)
+	for _, fileType := range []macho.Type{macho.TypeExec, macho.TypeDylib, machoTypeDylinker} {
+		b := make([]byte, 96)
+		le := binary.LittleEndian
+		for i, value := range []uint32{0xfeedfacf, 0x100000c, 0, uint32(fileType), 1, 24, 0, 0, 0x32, 24, 2, 0x1a0000, 0x1a0000, 0} {
+			le.PutUint32(b[i*4:], value)
+		}
+		signed, err := adHocSignExecutable(b, "example")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hash, err := inspectExecutable(signed); err != nil || len(hash) != 40 {
+			t.Fatalf("native signature rejected type=%d: %q %v", fileType, hash, err)
+		}
+		signed[90] ^= 1
+		if _, err := inspectExecutable(signed); err == nil {
+			t.Fatalf("native signature accepted modified code type=%d", fileType)
+		}
+	}
+}
+
+func TestAutomaticLCUUIDRehashesExistingAdHocSignature(t *testing.T) {
+	b := make([]byte, 128)
 	le := binary.LittleEndian
 	for i, value := range []uint32{0xfeedfacf, 0x100000c, 0, 2, 1, 24, 0, 0, 0x32, 24, 2, 0x1a0000, 0x1a0000, 0} {
 		le.PutUint32(b[i*4:], value)
 	}
-	signed, err := adHocSignExecutable(b, "example")
+	signed, err := adHocSignExecutable(b, "missing-uuid")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hash, err := inspectExecutable(signed); err != nil || len(hash) != 40 {
-		t.Fatalf("native signature rejected: %q %v", hash, err)
+	normalized, changed, err := addDeterministicLCUUID(signed)
+	if err != nil || !changed {
+		t.Fatalf("normalize LC_UUID changed=%t err=%v", changed, err)
 	}
-	signed[90] ^= 1
-	if _, err := inspectExecutable(signed); err == nil {
-		t.Fatal("native signature accepted modified code")
+	if hash, inspectErr := inspectExecutable(normalized); inspectErr != nil || len(hash) != 40 {
+		t.Fatalf("normalized signature rejected: hash=%q err=%v", hash, inspectErr)
+	}
+	f, err := macho.NewFile(bytes.NewReader(normalized))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	found := false
+	for _, load := range f.Loads {
+		if binary.LittleEndian.Uint32(load.Raw()) == 0x1b {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("normalized Mach-O lacks LC_UUID")
+	}
+	second, changed, err := addDeterministicLCUUID(normalized)
+	if err != nil || changed || !bytes.Equal(second, normalized) {
+		t.Fatalf("LC_UUID normalization is not idempotent: changed=%t err=%v", changed, err)
 	}
 }

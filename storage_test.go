@@ -107,6 +107,19 @@ func TestInternalAPFSRoleDiscoverySkipsUnknownRole(t *testing.T) {
 	}
 }
 
+func TestInternalAPFSRoleDiscoverySkipsRolelessVolumes(t *testing.T) {
+	value := validAPFSInventory + `+-o ProductOS16@9  <class AppleAPFSVolume, id 0x9>
+  |   "BSD Name" = "disk1s9"
++-o ProductOSRoot@10  <class AppleAPFSVolume, id 0xa>
+  |   "BSD Name" = "disk1s10"
+`
+	inventory, err := parseInternalVolumes([]byte(value))
+	if err != nil || len(inventory.Volumes) != 8 || len(inventory.SkippedDevices) != 2 ||
+		inventory.SkippedDevices[0] != "/dev/disk1s10" || inventory.SkippedDevices[1] != "/dev/disk1s9" {
+		t.Fatalf("roleless volume handling: inventory=%+v err=%v", inventory, err)
+	}
+}
+
 func TestInternalMountFailureReason(t *testing.T) {
 	if got := internalMountFailureReason("Data", "mount_apfs: Operation not permitted"); got != "encrypted volume keys are unavailable in this tethered session" {
 		t.Fatalf("Data mount reason = %q", got)

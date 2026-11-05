@@ -136,8 +136,9 @@ func trustCacheRow(version uint32, hash []byte) ([]byte, int, error) {
 }
 
 // extendTrustCache preserves the source format and adds only cdhashes produced
-// by validatePayload. Versions 0, 1, and 2 differ only in their entry suffix;
-// all are kept sorted and unique for deterministic component bytes.
+// by payload verification or validated trust-only imports. Versions 0, 1, and
+// 2 differ only in their entry suffix; all are kept sorted and unique for
+// deterministic component bytes.
 func extendTrustCache(im4p []byte, additions []payloadEntry) ([]byte, error) {
 	fields, err := imageFields(im4p, "IM4P")
 	if err != nil || len(fields) < 4 {

@@ -156,6 +156,10 @@ func neutralKernelPolicy(input []byte) ([]byte, error) {
 // identity supported by this repository.  It returns a typed IM4P; the caller
 // generates the outer structural policy after this transformation succeeds.
 func prepareRuntimeKernel(component []byte) ([]byte, error) {
+	return prepareRuntimeKernelWithTrust(component, nil)
+}
+
+func prepareRuntimeKernelWithTrust(component []byte, trust []trustEntry) ([]byte, error) {
 	fields, err := imageFields(component, "IM4P")
 	if err != nil || len(fields) < 4 || fields[1].tag != 0x16 || fields[3].tag != 4 {
 		return nil, errors.New("invalid runtime kernel IM4P")
@@ -166,6 +170,10 @@ func prepareRuntimeKernel(component []byte) ([]byte, error) {
 	}
 	if digest(raw) != canonicalRuntime.Kernel.DecodedSHA256 {
 		return nil, errors.New("runtime kernel preimage identity mismatch")
+	}
+	cacheGate, err := patchRuntimeSelector24DyldCacheGate(raw, trust)
+	if err != nil {
+		return nil, fmt.Errorf("runtime kernel selector-24 cache gate: %w", err)
 	}
 	location, err := locateKernelPolicy(raw)
 	if err != nil {
@@ -186,9 +194,19 @@ func prepareRuntimeKernel(component []byte) ([]byte, error) {
 	copy(raw[location.policy:], policy)
 	instruction := uint32(0xd2800004) | uint32(len(policy))<<5
 	binary.LittleEndian.PutUint32(raw[location.lengthInstruction:], instruction)
+	if cacheGate && digest(raw) != selector24KernelDecodedSHA256 {
+		return nil, errors.New("runtime kernel selector-24 cache gate decoded identity changed")
+	}
 	compressed, err := compression(raw, len(raw)+(1<<20), true, true)
 	if err != nil {
 		return nil, err
 	}
-	return replacePayload(component, string(fields[1].body), compressed)
+	prepared, err := replacePayload(component, string(fields[1].body), compressed)
+	if err != nil {
+		return nil, err
+	}
+	if cacheGate && (len(prepared) != selector24KernelIM4PBytes || digest(prepared) != selector24KernelIM4PSHA256) {
+		return nil, errors.New("runtime kernel selector-24 cache gate IM4P identity changed")
+	}
+	return prepared, nil
 }

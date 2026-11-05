@@ -15,7 +15,8 @@ func main() {
 	// IOKit's synchronous USB transfers can return kIOReturnAborted when Go's
 	// asynchronous preemption signal interrupts their Mach wait. Relaunch once
 	// with that signal disabled; cooperative scheduling remains enabled.
-	if len(os.Args) > 1 && (os.Args[1] == "shell" || os.Args[1] == "exec" || os.Args[1] == "doctor" || os.Args[1] == "reset") {
+	payloadRun := len(os.Args) > 2 && os.Args[1] == "payload" && os.Args[2] == "run"
+	if len(os.Args) > 1 && (os.Args[1] == "shell" || os.Args[1] == "exec" || os.Args[1] == "serial-exec" || os.Args[1] == "serial-start-ssh" || os.Args[1] == "doctor" || os.Args[1] == "reset" || payloadRun) {
 		debug := os.Getenv("GODEBUG")
 		if !strings.HasSuffix(debug, "asyncpreemptoff=1") {
 			exe, err := os.Executable()
@@ -39,7 +40,7 @@ func main() {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: 15-plus-kernel-poc shell | exec -- COMMAND | iboot analyze SNAPSHOT | iboot patch SNAPSHOT | iboot verify ORIGINAL PATCHED | payload list | payload add FILE [--dest /usr/local/bin/NAME] | assets fetch | assets import bootstrap DIRECTORY | doctor | reset")
+		return errors.New("usage: 15-plus-kernel-poc shell | exec -- COMMAND | serial-exec -- COMMAND | serial-start-ssh | iboot analyze SNAPSHOT | iboot patch SNAPSHOT | iboot verify ORIGINAL PATCHED | payload list | payload add FILE [--dest PATH] | payload run FILE [--dest PATH] [--include FILE=DEST]... [-- ARG...] | payload remove PATH | payload install-ssh | trust list | trust import FILE | assets fetch | assets import bootstrap DIRECTORY | doctor | reset")
 	}
 	root, err := projectRoot()
 	if err != nil {
@@ -74,6 +75,16 @@ func run(ctx context.Context, args []string) error {
 		return smartExec(ctx, cache, args[2:])
 	case "iboot":
 		return ibootCommand(args[1:], os.Stdout, os.Stderr)
+	case "serial-exec":
+		if len(args) < 3 || args[1] != "--" {
+			return errors.New("usage: serial-exec -- COMMAND [ARG...]")
+		}
+		return serialExec(ctx, cache, args[2:])
+	case "serial-start-ssh":
+		if len(args) != 1 {
+			return errors.New("usage: serial-start-ssh")
+		}
+		return serialStartSSH(ctx, cache)
 	case "assets":
 		return assetsCommand(ctx, cache, args[1:])
 	case "payload":
@@ -83,7 +94,24 @@ func run(ctx context.Context, args []string) error {
 		if len(args) >= 3 && args[1] == "add" {
 			return addPayload(ctx, cache, args[2:])
 		}
-		return errors.New("usage: payload list | payload add FILE [--dest /usr/local/bin/NAME]")
+		if len(args) >= 3 && args[1] == "run" {
+			return runPayload(ctx, cache, args[2:])
+		}
+		if len(args) == 3 && args[1] == "remove" {
+			return removePayload(cache, args[2:])
+		}
+		if len(args) == 2 && args[1] == "install-ssh" {
+			return installPayloadOverSSH(ctx, cache)
+		}
+		return errors.New("usage: payload list | payload add FILE [--dest PATH] | payload run FILE [--dest PATH] [--include FILE=DEST]... [-- ARG...] | payload remove PATH | payload install-ssh")
+	case "trust":
+		if len(args) == 2 && args[1] == "list" {
+			return listTrust(cache, os.Stdout)
+		}
+		if len(args) == 3 && args[1] == "import" {
+			return importTrust(cache, args[2:])
+		}
+		return errors.New("usage: trust list | trust import FILE")
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}

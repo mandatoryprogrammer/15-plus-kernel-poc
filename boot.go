@@ -138,6 +138,10 @@ func prepareRuntime(ctx context.Context, c *cache) (map[string][]byte, runtimeLa
 	if err != nil {
 		return nil, runtimeLayout{}, fmt.Errorf("prepared runtime: %w; import or derive the bootstrap component set described in README.md", err)
 	}
+	trustAdditions, err := loadTrustAdditions(c)
+	if err != nil {
+		return nil, runtimeLayout{}, err
+	}
 	for _, row := range rows {
 		if err = verifyFile(ctx, c.object(row), row); err != nil {
 			return nil, runtimeLayout{}, err
@@ -152,7 +156,7 @@ func prepareRuntime(ctx context.Context, c *cache) (map[string][]byte, runtimeLa
 				return nil, runtimeLayout{}, fmt.Errorf("%s envelope: %w", row.Role, err)
 			}
 		} else if row.Role == "kernel" {
-			component, err = prepareRuntimeKernel(component)
+			component, err = prepareRuntimeKernelWithTrust(component, trustAdditions)
 			if err != nil {
 				return nil, runtimeLayout{}, fmt.Errorf("%s policy: %w", row.Role, err)
 			}
@@ -171,7 +175,9 @@ func prepareRuntime(ctx context.Context, c *cache) (map[string][]byte, runtimeLa
 	if err != nil {
 		return nil, runtimeLayout{}, err
 	}
-	layout, err := preparePayloadTrust(images, additions)
+	admissions := append([]payloadEntry{}, additions...)
+	admissions = append(admissions, trustPayloadEntries(trustAdditions)...)
+	layout, err := preparePayloadTrust(images, admissions)
 	if err != nil {
 		return nil, runtimeLayout{}, fmt.Errorf("prepare payload admission: %w", err)
 	}
@@ -523,6 +529,15 @@ func bootLocked(ctx context.Context, c *cache, terminal bool, command []string) 
 	if err = installPayload(ctx, c, serial, additions); err != nil {
 		return err
 	}
+	admissionFingerprint, err := payloadAdmissionFingerprint(c)
+	if err != nil {
+		return err
+	}
+	receipt := []byte(admissionFingerprint + "\n")
+	if err = installFile(ctx, c, serial, targetAdmissionReceipt, receipt, digest(receipt), 0644); err != nil {
+		return fmt.Errorf("install volatile admission receipt: %w", err)
+	}
+	fmt.Fprintln(c.out, "Installed volatile admission receipt", admissionFingerprint)
 	if err = installSSHAccess(ctx, c, serial, access); err != nil {
 		return err
 	}

@@ -19,8 +19,9 @@ type internalVolume struct {
 }
 
 type internalVolumeInventory struct {
-	Volumes      []internalVolume
-	SkippedRoles []string
+	Volumes        []internalVolume
+	SkippedRoles   []string
+	SkippedDevices []string
 }
 
 var internalVolumeMounts = map[string]string{
@@ -65,21 +66,27 @@ func parseInternalVolumes(value []byte) (internalVolumeInventory, error) {
 	roles := make(map[string]bool, len(internalVolumeMounts))
 	devices := make(map[string]bool, len(internalVolumeMounts))
 	var skipped []string
+	var skippedDevices []string
 	finishRecord := func() error {
 		if !started {
 			return nil
 		}
-		if !record.hasRole || !record.hasDevice {
+		if !record.hasDevice {
 			return errors.New("APFS registry record is missing its role or BSD device")
-		}
-		if roles[record.role] {
-			return fmt.Errorf("APFS role %q is duplicated", record.role)
 		}
 		device := "/dev/" + record.device
 		if devices[device] {
 			return fmt.Errorf("APFS device %q is duplicated", device)
 		}
-		roles[record.role], devices[device] = true, true
+		devices[device] = true
+		if !record.hasRole {
+			skippedDevices = append(skippedDevices, device)
+			return nil
+		}
+		if roles[record.role] {
+			return fmt.Errorf("APFS role %q is duplicated", record.role)
+		}
+		roles[record.role] = true
 		mountPoint, supported := internalVolumeMounts[record.role]
 		if !supported {
 			skipped = append(skipped, record.role)
@@ -133,7 +140,8 @@ func parseInternalVolumes(value []byte) (internalVolumeInventory, error) {
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].MountPoint < result[j].MountPoint })
 	sort.Strings(skipped)
-	return internalVolumeInventory{Volumes: result, SkippedRoles: skipped}, nil
+	sort.Strings(skippedDevices)
+	return internalVolumeInventory{Volumes: result, SkippedRoles: skipped, SkippedDevices: skippedDevices}, nil
 }
 
 func verifyInternalMounts(value []byte, volumes []internalVolume) error {
@@ -185,6 +193,9 @@ func mountInternalStorage(ctx context.Context, c *cache, serial *serialCapture) 
 	}
 	for _, role := range parsed.SkippedRoles {
 		fmt.Fprintf(c.out, "Skipped APFS role %q: no safe mount path is defined\n", role)
+	}
+	for _, device := range parsed.SkippedDevices {
+		fmt.Fprintf(c.out, "Skipped roleless APFS volume %s: no safe mount role is defined\n", device)
 	}
 	volumes := parsed.Volumes
 	mounted := make([]internalVolume, 0, len(volumes))

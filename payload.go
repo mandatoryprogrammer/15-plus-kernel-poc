@@ -20,7 +20,10 @@ import (
 	"strings"
 )
 
-const payloadLimit = 64 << 20
+const (
+	payloadLimit      = 64 << 20
+	machoTypeDylinker = macho.Type(7)
+)
 
 func packedPlatformVersion(version string) (uint32, error) {
 	parts := strings.Split(version, ".")
@@ -91,8 +94,8 @@ func payloadPlan(base, additions []payloadEntry, capacity int64) ([]payloadEntry
 		seen[b.Destination] = true
 	}
 	for _, a := range additions {
-		if !strings.HasPrefix(a.Destination, "/usr/local/bin/") || path.Clean(a.Destination) != a.Destination || path.Dir(a.Destination) != "/usr/local/bin" || strings.ContainsAny(a.Destination, "\x00\r\n") {
-			return nil, fmt.Errorf("invalid payload destination %q: use /usr/local/bin/NAME", a.Destination)
+		if !validPayloadDestination(a.Destination) {
+			return nil, fmt.Errorf("invalid payload destination %q: use /usr/local/bin/NAME, /usr/local/lib/NAME, or /usr/local/libexec/NAME", a.Destination)
 		}
 		if seen[a.Destination] || reservedPayloadDestinations[a.Destination] {
 			return nil, fmt.Errorf("payload destination collision: %s", a.Destination)
@@ -112,23 +115,36 @@ func payloadPlan(base, additions []payloadEntry, capacity int64) ([]payloadEntry
 	return append(append([]payloadEntry{}, base...), additions...), nil
 }
 
-// inspectExecutable accepts thin iOS arm64/arm64e executables and verifies every
-// signed code page. macOS, simulator, Intel, malformed, and encrypted inputs fail.
+func validPayloadDestination(destination string) bool {
+	if path.Clean(destination) != destination || strings.ContainsAny(destination, "\x00\r\n") {
+		return false
+	}
+	directory := path.Dir(destination)
+	if directory != "/usr/local/bin" && directory != "/usr/local/lib" && directory != "/usr/local/libexec" {
+		return false
+	}
+	return path.Base(destination) != "." && path.Base(destination) != ".."
+}
+
+// inspectExecutable accepts thin iOS arm64/arm64e executables, dylibs, and
+// dynamic linkers and verifies every signed code page. macOS, simulator,
+// Intel, malformed, and encrypted inputs fail.
 func inspectExecutable(b []byte) (string, error) {
 	if len(b) > payloadLimit {
 		return "", errors.New("binary exceeds 64 MiB payload limit")
 	}
 	f, err := macho.NewFile(bytes.NewReader(b))
 	if err != nil {
-		return "", fmt.Errorf("expected a thin iOS Mach-O executable: %w", err)
+		return "", fmt.Errorf("expected a thin iOS Mach-O executable, dylib, or dynamic linker: %w", err)
 	}
 	defer f.Close()
 	maximumVersion, err := packedPlatformVersion(canonicalRuntime.IOSVersion)
 	if err != nil {
 		return "", err
 	}
-	if f.Cpu != macho.CpuArm64 || f.Type != macho.TypeExec || (f.SubCpu&0xffffff) != 0 && (f.SubCpu&0xffffff) != 2 {
-		return "", errors.New("binary must be a thin arm64 or arm64e executable")
+	validFileType := f.Type == macho.TypeExec || f.Type == macho.TypeDylib || f.Type == machoTypeDylinker
+	if f.Cpu != macho.CpuArm64 || !validFileType || (f.SubCpu&0xffffff) != 0 && (f.SubCpu&0xffffff) != 2 {
+		return "", errors.New("binary must be a thin arm64 or arm64e executable, dylib, or dynamic linker")
 	}
 	ios := false
 	var signature []byte
@@ -175,7 +191,7 @@ func inspectExecutable(b []byte) (string, error) {
 		return "", errors.New("binary targets macOS or a simulator; supply an iOS arm64 executable")
 	}
 	if signature == nil {
-		return "", errors.New("executable needs ad-hoc signing before trust preparation")
+		return "", errors.New("Mach-O image needs ad-hoc signing before trust preparation")
 	}
 	return codeHash(b, signature)
 }
@@ -247,8 +263,9 @@ func codeHash(executable, signature []byte) (string, error) {
 func alignValue(value, alignment int) int { return (value + alignment - 1) &^ (alignment - 1) }
 
 // adHocSignExecutable adds a deterministic SHA-256 CodeDirectory to an
-// unsigned thin Mach-O. The input must reserve one 16-byte load command in its
-// normal header padding, as executables produced by the supported toolchain do.
+// unsigned thin executable, dylib, or dynamic linker. The input must reserve
+// one 16-byte load command in its normal header padding, as images produced by
+// the supported toolchain do.
 func adHocSignExecutable(input []byte, identifier string) ([]byte, error) {
 	if len(input) < 32 || len(input) > payloadLimit || binary.LittleEndian.Uint32(input) != 0xfeedfacf {
 		return nil, errors.New("ad-hoc signing requires a thin little-endian 64-bit Mach-O")
@@ -258,8 +275,10 @@ func adHocSignExecutable(input []byte, identifier string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if le.Uint32(input[4:]) != uint32(macho.CpuArm64) || le.Uint32(input[12:]) != uint32(macho.TypeExec) {
-		return nil, errors.New("ad-hoc signing requires an arm64 executable")
+	fileType := macho.Type(le.Uint32(input[12:]))
+	validFileType := fileType == macho.TypeExec || fileType == macho.TypeDylib || fileType == machoTypeDylinker
+	if le.Uint32(input[4:]) != uint32(macho.CpuArm64) || !validFileType {
+		return nil, errors.New("ad-hoc signing requires an arm64 executable, dylib, or dynamic linker")
 	}
 	ncmds, commandsSize := int(le.Uint32(input[16:])), int(le.Uint32(input[20:]))
 	if ncmds < 1 || ncmds > 4096 || commandsSize < 8 || 32+commandsSize > len(input) {
@@ -413,6 +432,307 @@ func writePayloadAdditions(c *cache, entries []payloadEntry) error {
 	return os.Rename(name, filepath.Join(c.root, "private", "payload.json"))
 }
 
+func loadOwnedPayloadObjects(c *cache) ([]string, error) {
+	b, err := os.ReadFile(filepath.Join(c.root, "private", "payload-owned-objects.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var hashes []string
+	if err = json.Unmarshal(b, &hashes); err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	for _, hash := range hashes {
+		if !digestPattern.MatchString(hash) || seen[hash] {
+			return nil, errors.New("invalid owned payload object index")
+		}
+		seen[hash] = true
+	}
+	return hashes, nil
+}
+
+func writeOwnedPayloadObjects(c *cache, hashes []string) error {
+	sort.Strings(hashes)
+	b, err := json.MarshalIndent(hashes, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Join(c.root, "private"), "payload-owned-")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if err = tmp.Chmod(0600); err == nil {
+		_, err = tmp.Write(append(b, '\n'))
+	}
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(name, filepath.Join(c.root, "private", "payload-owned-objects.json"))
+}
+
+// gcOwnedPayloadObjects deletes only content objects that this payload importer
+// itself created and that no configured destination references. Prepared boot
+// objects and pre-existing cache content can never enter this ownership index.
+func gcOwnedPayloadObjects(c *cache, entries []payloadEntry, owned []string) error {
+	retained := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		retained[entry.SHA256] = true
+	}
+	kept := owned[:0]
+	for _, hash := range owned {
+		if retained[hash] {
+			kept = append(kept, hash)
+			continue
+		}
+		if err := os.Remove(c.object(asset{SHA256: hash})); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove stale payload object %s: %w", hash, err)
+		}
+		fmt.Fprintln(c.out, "Removed stale payload object", hash)
+	}
+	return writeOwnedPayloadObjects(c, kept)
+}
+
+type preparedPayload struct {
+	Entry        payloadEntry
+	Body         []byte
+	Dependencies []string
+	FileType     macho.Type
+	Signed       bool
+	LCUUIDAdded  bool
+}
+
+// addDeterministicLCUUID fills existing Mach-O header padding without moving
+// any segment. dyld requires LC_UUID for ordinary execution on this runtime.
+// If an embedded ad-hoc signature already exists, its primary CodeDirectory
+// page hashes are recomputed after the header-only edit.
+func addDeterministicLCUUID(input []byte) ([]byte, bool, error) {
+	if len(input) < 32 || binary.LittleEndian.Uint32(input) != 0xfeedfacf {
+		return nil, false, errors.New("LC_UUID normalization requires a thin little-endian 64-bit Mach-O")
+	}
+	le, be := binary.LittleEndian, binary.BigEndian
+	ncmds, commandsSize := int(le.Uint32(input[16:])), int(le.Uint32(input[20:]))
+	if ncmds < 1 || ncmds > 4096 || commandsSize < 8 || 32+commandsSize > len(input) {
+		return nil, false, errors.New("invalid Mach-O load command geometry")
+	}
+	firstData, at := len(input), 32
+	signatureOffset, signatureSize := -1, 0
+	for index := 0; index < ncmds; index++ {
+		if at > 32+commandsSize-8 {
+			return nil, false, errors.New("truncated Mach-O load command")
+		}
+		command, size := le.Uint32(input[at:]), int(le.Uint32(input[at+4:]))
+		if size < 8 || size&7 != 0 || at+size > 32+commandsSize {
+			return nil, false, errors.New("invalid Mach-O load command size")
+		}
+		if command == 0x1b {
+			if size != 24 {
+				return nil, false, errors.New("invalid LC_UUID size")
+			}
+			return bytes.Clone(input), false, nil
+		}
+		if command == 0x1d {
+			if size != 16 || signatureOffset >= 0 {
+				return nil, false, errors.New("invalid LC_CODE_SIGNATURE command")
+			}
+			signatureOffset, signatureSize = int(le.Uint32(input[at+8:])), int(le.Uint32(input[at+12:]))
+			if signatureOffset <= 0 || signatureSize <= 0 || signatureOffset > len(input)-signatureSize {
+				return nil, false, errors.New("invalid embedded signature bounds")
+			}
+		}
+		if command == 0x19 {
+			if size < 72 {
+				return nil, false, errors.New("short 64-bit segment command")
+			}
+			nsects := int(le.Uint32(input[at+64:]))
+			if 72+nsects*80 > size {
+				return nil, false, errors.New("invalid Mach-O section table")
+			}
+			for section := 0; section < nsects; section++ {
+				offset := int(le.Uint32(input[at+72+section*80+48:]))
+				if offset > 0 && offset < firstData {
+					firstData = offset
+				}
+			}
+		}
+		at += size
+	}
+	if at != 32+commandsSize {
+		return nil, false, errors.New("Mach-O load command size mismatch")
+	}
+	commandAt := 32 + commandsSize
+	if commandAt+24 > firstData || commandAt+24 > len(input) || !bytes.Equal(input[commandAt:commandAt+24], make([]byte, 24)) {
+		return nil, false, errors.New("Mach-O needs 24 bytes of zero header padding for automatic LC_UUID")
+	}
+	output := bytes.Clone(input)
+	le.PutUint32(output[16:], uint32(ncmds+1))
+	le.PutUint32(output[20:], uint32(commandsSize+24))
+	le.PutUint32(output[commandAt:], 0x1b)
+	le.PutUint32(output[commandAt+4:], 24)
+	uuid := sha256.Sum256(input)
+	copy(output[commandAt+8:commandAt+24], uuid[:16])
+	// Use the conventional RFC 4122 version/variant bits while retaining a
+	// deterministic identity derived from the complete input bytes.
+	output[commandAt+14] = output[commandAt+14]&0x0f | 0x40
+	output[commandAt+16] = output[commandAt+16]&0x3f | 0x80
+	if signatureOffset < 0 {
+		return output, true, nil
+	}
+	signature := output[signatureOffset : signatureOffset+signatureSize]
+	if len(signature) < 20 || be.Uint32(signature) != 0xfade0cc0 || int(be.Uint32(signature[4:])) > len(signature) {
+		return nil, false, errors.New("invalid signature superblob during LC_UUID normalization")
+	}
+	count := int(be.Uint32(signature[8:]))
+	if count < 1 || count > 1024 || 12+count*8 > len(signature) {
+		return nil, false, errors.New("invalid signature index during LC_UUID normalization")
+	}
+	primary := -1
+	for index := 0; index < count; index++ {
+		entry := signature[12+index*8:]
+		if be.Uint32(entry) == 0 {
+			primary = int(be.Uint32(entry[4:]))
+			break
+		}
+	}
+	if primary < 0 || primary > len(signature)-44 {
+		return nil, false, errors.New("primary CodeDirectory missing during LC_UUID normalization")
+	}
+	cd := signature[primary:]
+	cdSize := int(be.Uint32(cd[4:]))
+	if be.Uint32(cd) != 0xfade0c02 || cdSize < 44 || cdSize > len(cd) || be.Uint32(cd[12:])&2 == 0 {
+		return nil, false, errors.New("automatic LC_UUID normalization requires an ad-hoc primary CodeDirectory")
+	}
+	cd = cd[:cdSize]
+	limit, slots, hashOffset := int(be.Uint32(cd[32:])), int(be.Uint32(cd[28:])), int(be.Uint32(cd[16:]))
+	hashSize, hashType, pagePower := int(cd[36]), cd[37], cd[39]
+	if pagePower < 12 || pagePower > 16 || limit <= 0 || limit > len(output) || slots != (limit+(1<<pagePower)-1)/(1<<pagePower) || hashOffset < 44 || hashOffset > len(cd)-slots*hashSize {
+		return nil, false, errors.New("unsupported CodeDirectory geometry during LC_UUID normalization")
+	}
+	if (hashType != 1 || hashSize != sha1.Size) && (hashType != 2 || hashSize != sha256.Size) {
+		return nil, false, errors.New("unsupported CodeDirectory hash during LC_UUID normalization")
+	}
+	page := 1 << pagePower
+	for slot := 0; slot < slots; slot++ {
+		chunk := output[slot*page : min((slot+1)*page, limit)]
+		if hashType == 2 {
+			hash := sha256.Sum256(chunk)
+			copy(cd[hashOffset+slot*hashSize:], hash[:])
+		} else {
+			hash := sha1.Sum(chunk)
+			copy(cd[hashOffset+slot*hashSize:], hash[:])
+		}
+	}
+	return output, true, nil
+}
+
+func preparePayload(source, destination string) (preparedPayload, error) {
+	var result preparedPayload
+	if !validPayloadDestination(destination) || reservedPayloadDestinations[destination] {
+		return result, fmt.Errorf("invalid or reserved payload destination %q", destination)
+	}
+	b, err := os.ReadFile(source)
+	if err != nil {
+		return result, err
+	}
+	b, result.LCUUIDAdded, err = addDeterministicLCUUID(b)
+	if err != nil {
+		return result, err
+	}
+	f, err := macho.NewFile(bytes.NewReader(b))
+	if err != nil {
+		return result, fmt.Errorf("inspect Mach-O: %w", err)
+	}
+	result.FileType = f.Type
+	result.Dependencies, _ = f.ImportedLibraries()
+	_ = f.Close()
+	cdhash, inspectErr := inspectExecutable(b)
+	if inspectErr != nil && strings.Contains(inspectErr.Error(), "needs ad-hoc signing") {
+		b, err = adHocSignExecutable(b, filepath.Base(destination))
+		if err != nil {
+			return result, fmt.Errorf("ad-hoc sign compatible Mach-O: %w", err)
+		}
+		result.Signed = true
+		cdhash, inspectErr = inspectExecutable(b)
+	}
+	if inspectErr != nil {
+		return result, inspectErr
+	}
+	result.Body = b
+	result.Entry = payloadEntry{Destination: destination, SHA256: digest(b), Size: int64(len(b)), CDHash: cdhash, Origin: "user addition"}
+	return result, nil
+}
+
+func storePayloadPlan(ctx context.Context, c *cache, prepared []preparedPayload) (bool, error) {
+	base, err := basePayload()
+	if err != nil {
+		return false, err
+	}
+	additions, err := loadPayloadAdditions(c)
+	if err != nil {
+		return false, err
+	}
+	before, err := json.Marshal(additions)
+	if err != nil {
+		return false, err
+	}
+	for _, candidate := range prepared {
+		for i := range additions {
+			if additions[i].Destination == candidate.Entry.Destination {
+				additions = append(additions[:i], additions[i+1:]...)
+				break
+			}
+		}
+		additions = append(additions, candidate.Entry)
+	}
+	sort.Slice(additions, func(i, j int) bool { return additions[i].Destination < additions[j].Destination })
+	if _, err = payloadPlan(base, additions, payloadLimit); err != nil {
+		return false, err
+	}
+	owned, err := loadOwnedPayloadObjects(c)
+	if err != nil {
+		return false, err
+	}
+	ownedSet := make(map[string]bool, len(owned))
+	for _, hash := range owned {
+		ownedSet[hash] = true
+	}
+	for _, candidate := range prepared {
+		a := asset{Role: "payload", SHA256: candidate.Entry.SHA256, Size: candidate.Entry.Size, Recipe: "Imported user Mach-O", Compatibility: "iOS " + canonicalRuntime.IOSVersion + " arm64/arm64e"}
+		_, statErr := os.Stat(c.object(a))
+		if _, err = c.store(ctx, a, bytes.NewReader(candidate.Body)); err != nil {
+			return false, err
+		}
+		if errors.Is(statErr, os.ErrNotExist) && !ownedSet[a.SHA256] {
+			owned = append(owned, a.SHA256)
+			ownedSet[a.SHA256] = true
+		}
+	}
+	after, err := json.Marshal(additions)
+	if err != nil {
+		return false, err
+	}
+	changed := !bytes.Equal(before, after)
+	if changed {
+		if err = writePayloadAdditions(c, additions); err != nil {
+			return false, err
+		}
+	}
+	if err = gcOwnedPayloadObjects(c, additions, owned); err != nil {
+		return false, err
+	}
+	return changed, nil
+}
+
 func addPayload(ctx context.Context, c *cache, args []string) error {
 	if len(args) != 1 && len(args) != 3 {
 		return errors.New("usage: payload add FILE [--dest /usr/local/bin/NAME]")
@@ -425,49 +745,54 @@ func addPayload(ctx context.Context, c *cache, args []string) error {
 		}
 		destination = args[2]
 	}
-	b, err := os.ReadFile(source)
+	prepared, err := preparePayload(source, destination)
 	if err != nil {
 		return err
 	}
-	cdhash, inspectErr := inspectExecutable(b)
-	if inspectErr != nil && strings.Contains(inspectErr.Error(), "needs ad-hoc signing") {
-		b, err = adHocSignExecutable(b, filepath.Base(destination))
-		if err != nil {
-			return fmt.Errorf("ad-hoc sign compatible executable: %w", err)
-		}
-		cdhash, inspectErr = inspectExecutable(b)
-	}
-	if inspectErr != nil {
-		return inspectErr
-	}
-	entry := payloadEntry{Destination: destination, SHA256: digest(b), Size: int64(len(b)), CDHash: cdhash, Origin: "user addition"}
-	base, err := basePayload()
+	changed, err := storePayloadPlan(ctx, c, []preparedPayload{prepared})
 	if err != nil {
 		return err
 	}
+	action := "Already configured"
+	if changed {
+		action = "Added"
+	}
+	fmt.Fprintf(c.out, "%s %s (%d bytes, cdhash %s); the next matching boot will admit and install it.\n", action, destination, prepared.Entry.Size, prepared.Entry.CDHash)
+	return nil
+}
+
+func removePayload(c *cache, args []string) error {
+	if len(args) != 1 {
+		return errors.New("usage: payload remove /usr/local/bin/NAME")
+	}
+	destination := args[0]
 	additions, err := loadPayloadAdditions(c)
 	if err != nil {
 		return err
 	}
-	for i := range additions {
-		if additions[i].Destination == destination {
-			additions = append(additions[:i], additions[i+1:]...)
-			break
+	found := false
+	for index := range additions {
+		if additions[index].Destination != destination {
+			continue
 		}
+		additions = append(additions[:index], additions[index+1:]...)
+		found = true
+		break
 	}
-	additions = append(additions, entry)
-	sort.Slice(additions, func(i, j int) bool { return additions[i].Destination < additions[j].Destination })
-	if _, err = payloadPlan(base, additions, payloadLimit); err != nil {
-		return err
-	}
-	a := asset{Role: "payload", SHA256: entry.SHA256, Size: entry.Size, Recipe: "Imported user executable", Compatibility: "iOS " + canonicalRuntime.IOSVersion + " arm64/arm64e"}
-	if _, err = c.store(ctx, a, bytes.NewReader(b)); err != nil {
-		return err
+	if !found {
+		return fmt.Errorf("payload addition is absent: %s", destination)
 	}
 	if err = writePayloadAdditions(c, additions); err != nil {
 		return err
 	}
-	fmt.Fprintf(c.out, "Added %s (%d bytes, cdhash %s); the next boot will admit and install it.\n", destination, entry.Size, entry.CDHash)
+	owned, err := loadOwnedPayloadObjects(c)
+	if err != nil {
+		return err
+	}
+	if err = gcOwnedPayloadObjects(c, additions, owned); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.out, "Removed %s; the next boot will omit it.\n", destination)
 	return nil
 }
 

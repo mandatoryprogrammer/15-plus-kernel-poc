@@ -140,3 +140,36 @@ func rootExec(ctx context.Context, s *serialCapture, command string) ([]byte, er
 	// device service passes the decoded command to its fixed shell executor.
 	return rootRequest(ctx, s, "exec|"+hex.EncodeToString([]byte(command)))
 }
+
+func serialExec(ctx context.Context, c *cache, args []string) error {
+	if len(args) == 0 {
+		return errors.New("serial exec command is empty")
+	}
+	return withDeviceLock(c, func() error {
+		probe, err := findProbeSerial(ctx)
+		if err != nil {
+			return err
+		}
+		serial, err := startSerial(c, probe)
+		if err != nil {
+			return err
+		}
+		defer serial.Close()
+		pingCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		defer cancel()
+		if _, err = rootRequest(pingCtx, serial, "ping"); err != nil {
+			return fmt.Errorf("root serial service is unavailable: %w", err)
+		}
+		response, err := rootExec(ctx, serial, remoteCommand(args))
+		if len(response) != 0 {
+			fmt.Fprint(c.out, string(response))
+			if response[len(response)-1] != '\n' {
+				fmt.Fprintln(c.out)
+			}
+		}
+		if err != nil {
+			return fmt.Errorf("root serial exec: %w", err)
+		}
+		return nil
+	})
+}
