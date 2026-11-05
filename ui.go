@@ -16,7 +16,11 @@ const (
 	uiExecutableRelative = "usr/local/bin/monkeybars"
 	uiFrameworkRelative  = "AppleInternal/Library/Frameworks/iRemoteFramebuffer.framework/iRemoteFramebuffer"
 	uiExecutableTarget   = "/usr/local/bin/monkeybars"
+	uiStagedTarget       = "/usr/local/libexec/productos-ui"
 	uiFrameworkTarget    = "/usr/local/lib/iRemoteFramebuffer.framework/iRemoteFramebuffer"
+	uiRootLauncherTarget = "/usr/local/bin/productos-ui-root-launcher"
+	uiRootLauncherName   = "ProductOSUIRootLauncher"
+	uiRootLauncherMode   = "--chroot-ui-dirfd"
 )
 
 var uiBundleFiles = []string{
@@ -41,8 +45,9 @@ type uiObject struct {
 }
 
 type uiProfile struct {
-	Schema string     `json:"schema"`
-	Files  []uiObject `json:"files"`
+	Schema   string     `json:"schema"`
+	Files    []uiObject `json:"files"`
+	Launcher *uiObject  `json:"launcher,omitempty"`
 }
 
 func uiProfilePath(c *cache) string { return filepath.Join(c.root, "private", "ui-profile.json") }
@@ -82,7 +87,9 @@ func loadUIProfile(ctx context.Context, c *cache) (uiProfile, error) {
 	if err != nil {
 		return profile, err
 	}
-	if err = json.Unmarshal(body, &profile); err != nil || profile.Schema != "15-plus-kernel-poc.ui-profile.v1" || len(profile.Files) != len(uiBundleFiles) {
+	if err = json.Unmarshal(body, &profile); err != nil ||
+		(profile.Schema != "15-plus-kernel-poc.ui-profile.v1" && profile.Schema != "15-plus-kernel-poc.ui-profile.v2") ||
+		len(profile.Files) != len(uiBundleFiles) {
 		return profile, errors.New("invalid UI profile")
 	}
 	seen := map[string]bool{}
@@ -100,6 +107,17 @@ func loadUIProfile(ctx context.Context, c *cache) (uiProfile, error) {
 		if !seen[relative] {
 			return profile, fmt.Errorf("UI profile is missing %s", relative)
 		}
+	}
+	if profile.Schema == "15-plus-kernel-poc.ui-profile.v2" {
+		if profile.Launcher == nil || profile.Launcher.Relative != uiRootLauncherName {
+			return profile, errors.New("UI profile is missing the ProductOS root launcher")
+		}
+		a := asset{Role: "ui-root-launcher", SHA256: profile.Launcher.SHA256, Size: profile.Launcher.Size}
+		if err = verifyFile(ctx, c.object(a), a); err != nil {
+			return profile, fmt.Errorf("verify UI root launcher: %w", err)
+		}
+	} else if profile.Launcher != nil {
+		return profile, errors.New("v1 UI profile unexpectedly contains a root launcher")
 	}
 	return profile, nil
 }
@@ -156,16 +174,67 @@ func importUI(ctx context.Context, c *cache, root string) error {
 	return nil
 }
 
-func runUI(ctx context.Context, c *cache, args []string) error {
+func importUIRootLauncher(ctx context.Context, c *cache, name string) error {
 	profile, err := loadUIProfile(ctx, c)
 	if err != nil {
 		return err
 	}
-	executable, err := uiObjectPath(c, profile, uiExecutableRelative)
+	name, err = filepath.Abs(name)
 	if err != nil {
 		return err
 	}
+	info, err := os.Lstat(name)
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
+		return errors.New("UI root launcher is missing or not regular")
+	}
+	prepared, err := preparePayload(name, uiRootLauncherTarget)
+	if err != nil {
+		return fmt.Errorf("qualify UI root launcher: %w", err)
+	}
+	if prepared.FileType != macho.TypeExec {
+		return errors.New("UI root launcher input is not an executable")
+	}
+	body, err := os.ReadFile(name)
+	if err != nil {
+		return err
+	}
+	a := asset{Role: "ui-root-launcher", SHA256: digest(body), Size: int64(len(body)), Recipe: "Imported repository-built ProductOS root launcher", Compatibility: "ProductOS remote UI"}
+	if _, err = c.store(ctx, a, bytes.NewReader(body)); err != nil {
+		return err
+	}
+	profile.Schema = "15-plus-kernel-poc.ui-profile.v2"
+	profile.Launcher = &uiObject{Relative: uiRootLauncherName, SHA256: a.SHA256, Size: a.Size}
+	if err = writeUIProfile(c, profile); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.out, "Imported and verified ProductOS UI root launcher (%d bytes).\n", a.Size)
+	return nil
+}
+
+func uiPayloadRunArguments(c *cache, profile uiProfile, programArgs []string) ([]string, error) {
+	if profile.Launcher == nil || profile.Launcher.Relative != uiRootLauncherName {
+		return nil, errors.New("UI root launcher is not imported; run: 15-plus-kernel-poc ui launcher import FILE")
+	}
+	launcher := c.object(asset{SHA256: profile.Launcher.SHA256})
+	executable, err := uiObjectPath(c, profile, uiExecutableRelative)
+	if err != nil {
+		return nil, err
+	}
 	framework, err := uiObjectPath(c, profile, uiFrameworkRelative)
+	if err != nil {
+		return nil, err
+	}
+	runArgs := []string{
+		launcher, "--dest", uiRootLauncherTarget,
+		"--include", executable + "=" + uiStagedTarget,
+		"--include", framework + "=" + uiFrameworkTarget,
+		"--", uiRootLauncherMode,
+	}
+	return append(runArgs, programArgs...), nil
+}
+
+func runUI(ctx context.Context, c *cache, args []string) error {
+	profile, err := loadUIProfile(ctx, c)
 	if err != nil {
 		return err
 	}
@@ -176,22 +245,20 @@ func runUI(ctx context.Context, c *cache, args []string) error {
 		}
 		programArgs = append([]string(nil), args[1:]...)
 	}
-	runArgs := []string{
-		executable, "--dest", uiExecutableTarget,
-		"--include", framework + "=" + uiFrameworkTarget,
-		"--env", "DYLD_ROOT_PATH=/mnt/iphone/system",
-		"--env", "DYLD_FRAMEWORK_PATH=/usr/local/lib",
-		"--env", "DYLD_SHARED_CACHE_DIR=/mnt/iphone/system/System/Library/Caches/com.apple.dyld",
-		"--",
+	runArgs, err := uiPayloadRunArguments(c, profile, programArgs)
+	if err != nil {
+		return err
 	}
-	runArgs = append(runArgs, programArgs...)
-	fmt.Fprintln(c.out, "Launching imported MonkeyBars UI with automatic signing, dependency staging, ProductOS library routing, and live-environment reuse")
+	fmt.Fprintln(c.out, "Launching imported MonkeyBars UI with automatic signing, exact staging, and a child-only ProductOS root")
 	return runPayload(ctx, c, runArgs)
 }
 
 func uiCommand(ctx context.Context, c *cache, args []string) error {
 	if len(args) == 2 && args[0] == "import" {
 		return importUI(ctx, c, args[1])
+	}
+	if len(args) == 3 && args[0] == "launcher" && args[1] == "import" {
+		return importUIRootLauncher(ctx, c, args[2])
 	}
 	if len(args) >= 1 && args[0] == "run" {
 		return runUI(ctx, c, args[1:])
@@ -201,8 +268,12 @@ func uiCommand(ctx context.Context, c *cache, args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(c.out, "UI bundle ready: %d exact objects; use: 15-plus-kernel-poc ui run\n", len(profile.Files))
+		if profile.Launcher == nil {
+			fmt.Fprintf(c.out, "UI bundle ready: %d exact objects; root launcher not imported\n", len(profile.Files))
+		} else {
+			fmt.Fprintf(c.out, "UI bundle ready: %d exact objects plus ProductOS root launcher; use: 15-plus-kernel-poc ui run\n", len(profile.Files))
+		}
 		return nil
 	}
-	return errors.New("usage: ui import DIRECTORY | ui status | ui run [-- MONKEYBARS-ARG...]")
+	return errors.New("usage: ui import DIRECTORY | ui launcher import FILE | ui status | ui run [-- MONKEYBARS-ARG...]")
 }
