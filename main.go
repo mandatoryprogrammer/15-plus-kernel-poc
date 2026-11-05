@@ -16,9 +16,12 @@ func main() {
 	// asynchronous preemption signal interrupts their Mach wait. Relaunch once
 	// with that signal disabled; cooperative scheduling remains enabled.
 	payloadRun := len(os.Args) > 2 && os.Args[1] == "payload" && os.Args[2] == "run"
+	probeRun := len(os.Args) > 2 && os.Args[1] == "probe" && os.Args[2] == "run"
+	serviceChainRun := len(os.Args) > 2 && os.Args[1] == "service-chain" && os.Args[2] == "run"
+	machServiceProbe := len(os.Args) > 2 && os.Args[1] == "mach-service" && os.Args[2] == "probe"
 	uiDeviceOperation := len(os.Args) > 2 && os.Args[1] == "ui" &&
-		(os.Args[2] == "run" || os.Args[2] == "capture" || os.Args[2] == "tap")
-	if len(os.Args) > 1 && (os.Args[1] == "shell" || os.Args[1] == "exec" || os.Args[1] == "pull" || os.Args[1] == "serial-exec" || os.Args[1] == "serial-start-ssh" || os.Args[1] == "doctor" || os.Args[1] == "reset" || payloadRun || uiDeviceOperation) {
+		(os.Args[2] == "run" || os.Args[2] == "capture" || os.Args[2] == "tap" || os.Args[2] == "verify")
+	if len(os.Args) > 1 && (os.Args[1] == "shell" || os.Args[1] == "exec" || os.Args[1] == "pull" || os.Args[1] == "serial-exec" || os.Args[1] == "serial-start-ssh" || os.Args[1] == "doctor" || os.Args[1] == "reset" || payloadRun || probeRun || serviceChainRun || machServiceProbe || uiDeviceOperation) {
 		debug := os.Getenv("GODEBUG")
 		if !strings.HasSuffix(debug, "asyncpreemptoff=1") {
 			exe, err := os.Executable()
@@ -42,7 +45,7 @@ func main() {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: 15-plus-kernel-poc shell | exec -- COMMAND | pull REMOTE LOCAL | ui import DIRECTORY | ui status | ui run | payload run FILE | system-trust import FILE | cache gc | doctor | reset")
+		return errors.New("usage: 15-plus-kernel-poc shell | exec -- COMMAND | pull REMOTE LOCAL | ui ... | payload ... | probe ... | service-chain ... | mach-service ... | runtime qualify | target index | system-trust ... | cache gc | doctor | reset")
 	}
 	root, err := projectRoot()
 	if err != nil {
@@ -96,6 +99,22 @@ func run(ctx context.Context, args []string) error {
 		return assetsCommand(ctx, cache, args[1:])
 	case "ui":
 		return uiCommand(ctx, cache, args[1:])
+	case "service-chain":
+		return serviceChainCommand(ctx, cache, args[1:])
+	case "mach-service":
+		return machServiceCommand(ctx, cache, args[1:])
+	case "probe":
+		return probeCommand(ctx, cache, args[1:])
+	case "runtime":
+		if len(args) >= 2 && args[1] == "qualify" {
+			return runtimeQualifyCommand(ctx, cache, args[2:])
+		}
+		return errors.New("usage: runtime qualify [PRODUCTOS_ROOT]")
+	case "target":
+		if len(args) >= 2 && args[1] == "index" {
+			return targetIndexCommand(ctx, cache, args[2:])
+		}
+		return errors.New("usage: target index PRODUCTOS_ROOT")
 	case "cache":
 		if len(args) >= 2 && args[1] == "gc" {
 			return cacheGCCommand(cache, args[2:])

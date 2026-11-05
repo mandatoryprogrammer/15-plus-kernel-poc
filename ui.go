@@ -211,9 +211,12 @@ func importUIRootLauncher(ctx context.Context, c *cache, name string) error {
 	return nil
 }
 
-func uiPayloadRunArguments(c *cache, profile uiProfile, programArgs []string) ([]string, error) {
+func uiPayloadRunArgumentsMode(c *cache, profile uiProfile, launcherMode string, programArgs []string) ([]string, error) {
 	if profile.Launcher == nil || profile.Launcher.Relative != uiRootLauncherName {
 		return nil, errors.New("UI root launcher is not imported; run: 15-plus-kernel-poc ui launcher import FILE")
+	}
+	if launcherMode == "" {
+		return nil, errors.New("UI launcher mode is empty")
 	}
 	launcher := c.object(asset{SHA256: profile.Launcher.SHA256})
 	executable, err := uiObjectPath(c, profile, uiExecutableRelative)
@@ -228,9 +231,25 @@ func uiPayloadRunArguments(c *cache, profile uiProfile, programArgs []string) ([
 		launcher, "--dest", uiRootLauncherTarget,
 		"--include", executable + "=" + uiStagedTarget,
 		"--include", framework + "=" + uiFrameworkTarget,
-		"--", uiRootLauncherMode,
+		"--", launcherMode,
 	}
 	return append(runArgs, programArgs...), nil
+}
+
+func uiPayloadRunArguments(c *cache, profile uiProfile, programArgs []string) ([]string, error) {
+	return uiPayloadRunArgumentsMode(c, profile, uiRootLauncherMode, programArgs)
+}
+
+func uiLauncherRunArguments(c *cache, profile uiProfile, launcherArgs []string) ([]string, error) {
+	if profile.Launcher == nil || profile.Launcher.Relative != uiRootLauncherName {
+		return nil, errors.New("UI root launcher is not imported; run: 15-plus-kernel-poc ui launcher import FILE")
+	}
+	if len(launcherArgs) == 0 {
+		return nil, errors.New("UI launcher arguments are empty")
+	}
+	launcher := c.object(asset{SHA256: profile.Launcher.SHA256})
+	runArgs := []string{launcher, "--dest", uiRootLauncherTarget, "--"}
+	return append(runArgs, launcherArgs...), nil
 }
 
 func runUI(ctx context.Context, c *cache, args []string) error {
@@ -269,6 +288,9 @@ func uiCommand(ctx context.Context, c *cache, args []string) error {
 	if len(args) >= 1 && args[0] == "tap" {
 		return tapUIFrame(ctx, c, args[1:])
 	}
+	if len(args) >= 1 && args[0] == "verify" {
+		return verifyUICommand(ctx, c, args[1:])
+	}
 	if len(args) == 1 && args[0] == "status" {
 		profile, err := loadUIProfile(ctx, c)
 		if err != nil {
@@ -281,5 +303,5 @@ func uiCommand(ctx context.Context, c *cache, args []string) error {
 		}
 		return nil
 	}
-	return errors.New("usage: ui import DIRECTORY | ui launcher import FILE | ui status | ui run [-- MONKEYBARS-ARG...] | ui capture | ui tap X Y")
+	return errors.New("usage: ui import DIRECTORY | ui launcher import FILE | ui status | ui run [-- MONKEYBARS-ARG...] | ui capture | ui tap X Y | ui verify [--x X --y Y --settle DURATION]")
 }

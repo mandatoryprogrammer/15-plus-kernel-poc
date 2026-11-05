@@ -63,6 +63,15 @@ go build -mod=vendor -o 15-plus-kernel-poc .
 | `go run . payload run FILE --include LIB=/usr/local/lib/LIB -- ARG...` | Include and admit a dylib dependency in the same transaction. |
 | `go run . ui import DIRECTORY` | Verify and content-address the complete MonkeyBars/iRemoteFramebuffer bundle once. |
 | `go run . ui run` | Reuse or boot the phone, sign and hot-upload the UI executable and framework, route ProductOS libraries, and launch the normal remote-screen service arguments. |
+| `go run . service-chain run default` | Start the tracked ProductOS display-service graph in declared order, demand-activate on-demand jobs, verify residency, and launch the UI with reverse-order rollback on a partial failure. |
+| `go run . mach-service probe SERVICE` | Perform one bounded root-bootstrap lookup and activation message, then release the acquired Mach right exactly. |
+| `go run . ui verify` | Capture a nonblack frame, inject one bounded tap, capture again, and require a changed nonblack frame with atomic PNG/JSON evidence. |
+| `go run . probe normalize FILE` | Normalize/sign one raw probe and report its exact size, SHA-256, CDHash, dependencies, and immutable object path. |
+| `go run . probe build SOURCE --sysroot ROOT` | Compile twice against an exact ProductOS root, require byte-identical raw and normalized outputs, and retain only the content-addressed result. |
+| `go run . probe run FILE -- ARG...` | Run a probe through the same automatic admission, transfer, readback, and cleanup path as every other payload. |
+| `go run . probe supervisor --symbol SYMBOL` | Generate a fork-free pthread supervisor with atomic stage markers and a bounded framework-call deadline. |
+| `go run . runtime qualify` | Verify the complete boot tuple, whole-system trust context, UI inputs, and admission fingerprint as one contract. |
+| `go run . target index PRODUCTOS_ROOT` | Build a content-addressed inventory of executables, plists, Mach services, shared caches, trust cache, and non-followed symlinks. |
 | `go run . system-trust import StaticTrustCache.img4` | Import one complete system static-trust IMG4 and merge its whole table into the next volatile boot context. |
 | `go run . system-trust status` | Verify and report the configured complete system trust context. |
 | `go run . system-trust clear` | Clear the configured context while retaining its immutable cached object. |
@@ -149,9 +158,38 @@ ambiguous match, signs them, and stages them below `/usr/local/lib`. Absolute
 ProductOS dylib paths remain the responsibility of the selected runtime. The
 latest structured result replaces
 `.cache/private/payload-run-latest.json`; successful unchanged reruns reuse the
-are indexed and removed automatically after the next run or `payload remove`,
-while prepared boot objects and pre-existing cache content are never eligible
-for that cleanup.
+live admitted environment. Transient staged paths are indexed and removed
+automatically after the next run or `payload remove`, while prepared boot
+objects and pre-existing cache content are never eligible for that cleanup.
+
+### Deterministic probe loop
+
+Use `probe build` instead of reproducing compiler and normalization commands by
+hand:
+
+```sh
+go run . probe build DisplayProbe.c --sysroot /Volumes/ramdisk --min-ios 16.0
+go run . probe run .cache/objects/OBJECT_HASH -- --probe-argument
+```
+
+The builder invokes the Darwin compiler twice in separate directories, links
+the exact `usr/lib/libSystem.B.dylib` from the selected root, disables UUID and
+implicit signing nondeterminism, and rejects unequal raw or normalized bytes.
+Its scratch directory is deleted on success and failure. `probe normalize`
+provides the same canonical normalization for an already-built Mach-O without
+requiring a temporary test hook.
+
+For a framework call that might block, generate the standard target-side
+supervisor and edit only its typed invocation adapter:
+
+```sh
+go run . probe supervisor --symbol CARenderServerGetDisplayLogicalBounds \
+  --marker display --timeout-ms 2000 --dest DisplayBoundsProbe.c
+```
+
+The generated program uses a pthread, atomic stage state, and a monotonic
+deadline. It does not fork, and it reports the exact stage that failed to
+return.
 
 ### One-command remote UI
 
@@ -169,6 +207,48 @@ later runs do not depend on the original directory. `ui run` automatically
 normalizes signatures, stages the caller-owned framework, sets ProductOS root,
 framework, and shared-cache locations, and uses MonkeyBars' normal screen
 service arguments. Use `ui run -- -h` for a bounded help probe.
+
+The tracked default display chain is declarative:
+
+```sh
+go run . service-chain validate examples/productos-display-chain.json
+go run . service-chain run default
+```
+
+The current registry contains the three physically qualified ProductOS jobs:
+`appledisplayplatformd`, `hidd.nonui`, and `SwitchBoard`. The launcher creates
+each exact absent descriptor exclusively, verifies its readback, bootstraps the
+system-domain job, demand-activates it when required, verifies a resident PID,
+removes the temporary descriptor, and rolls back already-started jobs in reverse
+order if a later stage fails. Unknown or duplicate service names fail on the
+host before device contact.
+
+Once RFB is available, `ui verify` is the acceptance operation rather than a
+process or socket check:
+
+```sh
+go run . ui verify
+go run . ui verify --x 200 --y 300 --settle 2s
+```
+
+It requires nonzero geometry, a nonblack complete frame, successful pointer
+down/up, and a second nonblack frame with a different RGBA SHA-256. Each run has
+its own atomic evidence directory. At most ten runs younger than seven days are
+retained; older tool-owned frame directories are removed before a new run.
+
+Before switching ProductOS roots or trust material, qualify the tuple once:
+
+```sh
+go run . runtime qualify
+go run . target index /path/to/ProductOS-root
+go run . runtime qualify /path/to/ProductOS-root
+```
+
+The optional root qualification additionally requires its ProductOS build,
+complete StaticTrustCache, and shared-cache inventory to match the configured
+runtime. The InternalUI bundle keeps its own reported source version; it is not
+incorrectly required to equal the newer ProductOS root. Target indexing records
+symlinks without following them and prunes superseded index JSON automatically.
 
 Run `cache gc --dry-run` to review disposable test/build scratch, then `cache
 gc` to remove it. High-level payload runs also prune abandoned files older than

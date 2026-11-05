@@ -1,0 +1,9 @@
+{
+  "schema": "15-plus-kernel-poc.service-chain.v1",
+  "name": "productos-display",
+  "services": [
+    "appledisplayplatformd",
+    "hidd.nonui",
+    "SwitchBoard"
+  ]
+}
