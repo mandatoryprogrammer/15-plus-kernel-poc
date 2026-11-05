@@ -171,9 +171,9 @@ func prepareRuntimeKernelWithTrust(component []byte, trust []trustEntry) ([]byte
 	if digest(raw) != canonicalRuntime.Kernel.DecodedSHA256 {
 		return nil, errors.New("runtime kernel preimage identity mismatch")
 	}
-	cacheGate, err := patchRuntimeSelector24DyldCacheGate(raw, trust)
+	cacheGate, err := patchRuntimeCallerAuthorizationGate(raw, trust)
 	if err != nil {
-		return nil, fmt.Errorf("runtime kernel selector-24 cache gate: %w", err)
+		return nil, fmt.Errorf("runtime kernel caller authorization gate: %w", err)
 	}
 	location, err := locateKernelPolicy(raw)
 	if err != nil {
@@ -195,7 +195,7 @@ func prepareRuntimeKernelWithTrust(component []byte, trust []trustEntry) ([]byte
 	instruction := uint32(0xd2800004) | uint32(len(policy))<<5
 	binary.LittleEndian.PutUint32(raw[location.lengthInstruction:], instruction)
 	if cacheGate && digest(raw) != selector24KernelDecodedSHA256 {
-		return nil, errors.New("runtime kernel selector-24 cache gate decoded identity changed")
+		return nil, fmt.Errorf("runtime kernel selector-24 gate decoded identity changed: %s", digest(raw))
 	}
 	compressed, err := compression(raw, len(raw)+(1<<20), true, true)
 	if err != nil {
@@ -206,7 +206,7 @@ func prepareRuntimeKernelWithTrust(component []byte, trust []trustEntry) ([]byte
 		return nil, err
 	}
 	if cacheGate && (len(prepared) != selector24KernelIM4PBytes || digest(prepared) != selector24KernelIM4PSHA256) {
-		return nil, errors.New("runtime kernel selector-24 cache gate IM4P identity changed")
+		return nil, fmt.Errorf("runtime kernel selector-24 gate IM4P identity changed: sha256=%s bytes=%d", digest(prepared), len(prepared))
 	}
 	return prepared, nil
 }

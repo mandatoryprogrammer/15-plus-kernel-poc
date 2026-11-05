@@ -15,12 +15,15 @@ import (
 	"time"
 )
 
-const targetAdmissionReceipt = "/private/var/run/15-plus-kernel-poc-admission"
+const (
+	targetAdmissionReceipt = "/private/var/run/15-plus-kernel-poc-admission"
+	targetPayloadRunner    = "/usr/local/bin/payload-runner"
+)
 
 type admissionIdentity struct {
-	Runtime string         `json:"runtime"`
-	Payload []payloadEntry `json:"payload"`
-	Trust   []trustEntry   `json:"trust,omitempty"`
+	Runtime           string       `json:"runtime"`
+	AuthorizationGate string       `json:"authorization_gate"`
+	Trust             []trustEntry `json:"trust,omitempty"`
 }
 
 type payloadRunReport struct {
@@ -37,24 +40,23 @@ type payloadRunReport struct {
 	ExactReadback        bool           `json:"exact_readback"`
 	Dependencies         []string       `json:"dependencies,omitempty"`
 	LCUUIDAdded          bool           `json:"lc_uuid_added"`
+	LinkerSigned         bool           `json:"linker_signed"`
+	Transferred          bool           `json:"transferred"`
 	Includes             []payloadEntry `json:"includes,omitempty"`
 	Arguments            []string       `json:"arguments,omitempty"`
+	Environment          []string       `json:"environment,omitempty"`
 	Exit                 string         `json:"exit"`
 	Error                string         `json:"error,omitempty"`
 }
 
 func payloadAdmissionFingerprint(c *cache) (string, error) {
-	payload, err := loadPayloadAdditions(c)
-	if err != nil {
-		return "", err
-	}
 	trust, err := loadTrustAdditions(c)
 	if err != nil {
 		return "", err
 	}
-	sort.Slice(payload, func(i, j int) bool { return payload[i].Destination < payload[j].Destination })
+	trust = bootTrustAdditions(trust)
 	sort.Slice(trust, func(i, j int) bool { return trust[i].Name < trust[j].Name })
-	identity := admissionIdentity{Runtime: canonicalRuntime.IOSVersion, Payload: payload, Trust: trust}
+	identity := admissionIdentity{Runtime: canonicalRuntime.IOSVersion, AuthorizationGate: "adhoc-linker-signed-plus-product-dyld-v1", Trust: trust}
 	b, err := json.Marshal(identity)
 	if err != nil {
 		return "", err
@@ -101,7 +103,7 @@ func splitPayloadInclude(value string) (string, string, error) {
 	return source, destination, nil
 }
 
-func parsePayloadRun(args []string) (source, destination string, includes [][2]string, commandArgs []string, err error) {
+func parsePayloadRun(args []string) (source, destination string, includes [][2]string, environment, commandArgs []string, err error) {
 	if len(args) == 0 || args[0] == "--" {
 		err = errors.New("usage: payload run FILE [--dest /usr/local/bin/NAME] [--include FILE=/usr/local/lib/NAME]... [-- ARG...]")
 		return
@@ -132,6 +134,17 @@ func parsePayloadRun(args []string) (source, destination string, includes [][2]s
 				return
 			}
 			includes = append(includes, [2]string{includeSource, includeDestination})
+		case "--env":
+			if index+1 >= len(args) {
+				err = errors.New("--env needs NAME=VALUE")
+				return
+			}
+			index++
+			if !validPayloadEnvironment(args[index]) {
+				err = fmt.Errorf("invalid payload environment %q", args[index])
+				return
+			}
+			environment = append(environment, args[index])
 		default:
 			err = fmt.Errorf("unknown payload run option %q; put target arguments after --", args[index])
 			return
@@ -196,23 +209,61 @@ func verifyPayloadReadback(ctx context.Context, c *cache, access sshAccess, entr
 	return nil
 }
 
-func runPreparedPayload(ctx context.Context, c *cache, main payloadEntry, includes []payloadEntry, args []string) error {
+func runPreparedPayload(ctx context.Context, c *cache, main payloadEntry, includes []payloadEntry, environment, args []string) error {
 	return withDeviceLock(c, func() error {
 		access, err := loadAccess(ctx, c)
 		if err != nil {
 			return err
 		}
-		entries := append([]payloadEntry{main}, includes...)
+		runtimeMain := main
+		// A stable executable slot is created by every current boot. Retain a
+		// compatibility fallback for a live environment started by an older
+		// binary, then use the stable slot on its next boot.
+		probeCtx, probeCancel := context.WithTimeout(ctx, 8*time.Second)
+		probeErr := runSSH(probeCtx, access, false, []string{"/bin/bash", "-c", "test -x " + shellQuote(targetPayloadRunner)}, nil, io.Discard, os.Stderr)
+		probeCancel()
+		if probeErr == nil {
+			runtimeMain.Destination = targetPayloadRunner
+		} else {
+			fmt.Fprintln(c.out, "Live environment predates the stable payload runner; using its pre-created logical destination for this run")
+		}
+		entries := append([]payloadEntry{runtimeMain}, includes...)
+		for _, entry := range entries {
+			a := asset{Role: "payload", SHA256: entry.SHA256, Size: entry.Size}
+			if err = verifyFile(ctx, c.object(a), a); err != nil {
+				return err
+			}
+			body, readErr := os.ReadFile(c.object(a))
+			if readErr != nil {
+				return readErr
+			}
+			fmt.Fprintf(c.out, "Transferring caller payload over authenticated SSH: %s (%d bytes)\n", entry.Destination, len(body))
+			uploadCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			// Boot preparation creates every destination with mode 0755. Opening
+			// it for truncation preserves that mode, avoiding a dependency on a
+			// chmod utility that the minimal root intentionally does not carry.
+			script := "umask 022; /bin/mkdir -p " + shellQuote(filepath.Dir(entry.Destination)) + "; /bin/cat > " + shellQuote(entry.Destination)
+			err = runSSH(uploadCtx, access, false, []string{"/bin/bash", "-c", script}, bytes.NewReader(body), io.Discard, os.Stderr)
+			cancel()
+			if err != nil {
+				return fmt.Errorf("transfer %s: %w", entry.Destination, err)
+			}
+		}
 		if err = verifyPayloadReadback(ctx, c, access, entries); err != nil {
 			return err
 		}
 		checkCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-		err = runSSH(checkCtx, access, false, []string{"/bin/bash", "-c", "test -x " + shellQuote(main.Destination)}, nil, io.Discard, os.Stderr)
+		err = runSSH(checkCtx, access, false, []string{"/bin/bash", "-c", "test -x " + shellQuote(runtimeMain.Destination)}, nil, io.Discard, os.Stderr)
 		cancel()
 		if err != nil {
-			return fmt.Errorf("payload is not executable: %s: %w", main.Destination, err)
+			return fmt.Errorf("payload is not executable: %s: %w", runtimeMain.Destination, err)
 		}
-		command := append([]string{main.Destination}, args...)
+		command := append([]string{}, runtimeMain.Destination)
+		if len(environment) > 0 {
+			command = append([]string{"/usr/bin/env"}, environment...)
+			command = append(command, runtimeMain.Destination)
+		}
+		command = append(command, args...)
 		fmt.Fprintf(c.out, "Executing admitted payload: %s\n", remoteCommand(command))
 		return runSSH(ctx, access, false, command, os.Stdin, os.Stdout, os.Stderr)
 	})
@@ -222,7 +273,8 @@ func runPreparedPayload(ctx context.Context, c *cache, main payloadEntry, includ
 // It owns signing, CDHash derivation, trust composition, boot/reuse selection,
 // exact target readback, and argument-safe execution.
 func runPayload(ctx context.Context, c *cache, args []string) (runErr error) {
-	source, destination, includes, commandArgs, err := parsePayloadRun(args)
+	defer pruneTransientCache(c)
+	source, destination, includes, environment, commandArgs, err := parsePayloadRun(args)
 	if err != nil {
 		return err
 	}
@@ -246,7 +298,11 @@ func runPayload(ctx context.Context, c *cache, args []string) (runErr error) {
 		}
 		prepared = append(prepared, dependency)
 	}
-	changed, err := storePayloadPlan(ctx, c, prepared)
+	prepared, err = discoverPayloadDependencies(source, prepared)
+	if err != nil {
+		return err
+	}
+	changed, err := storePayloadRunPlan(ctx, c, prepared)
 	if err != nil {
 		return err
 	}
@@ -258,7 +314,7 @@ func runPayload(ctx context.Context, c *cache, args []string) (runErr error) {
 		Schema: "15-plus-kernel-poc.payload-run.v1", StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		Source: source, Destination: main.Entry.Destination, SHA256: main.Entry.SHA256, CDHash: main.Entry.CDHash,
 		AdmissionFingerprint: fingerprint, ConfigurationChanged: changed, Dependencies: main.Dependencies,
-		LCUUIDAdded: main.LCUUIDAdded, Arguments: commandArgs, Exit: "incomplete",
+		LCUUIDAdded: main.LCUUIDAdded, LinkerSigned: main.LinkerSigned, Environment: environment, Arguments: commandArgs, Exit: "incomplete",
 	}
 	for _, dependency := range prepared[1:] {
 		report.Includes = append(report.Includes, dependency.Entry)
@@ -292,9 +348,10 @@ func runPayload(ctx context.Context, c *cache, args []string) (runErr error) {
 	if !runningAdmissionMatches(ctx, c, fingerprint) {
 		return errors.New("running target admission receipt does not match the prepared payload plan")
 	}
-	if err = runPreparedPayload(ctx, c, main.Entry, report.Includes, commandArgs); err != nil {
+	if err = runPreparedPayload(ctx, c, main.Entry, report.Includes, environment, commandArgs); err != nil {
 		return err
 	}
+	report.Transferred = true
 	report.ExactReadback = true
 	return nil
 }

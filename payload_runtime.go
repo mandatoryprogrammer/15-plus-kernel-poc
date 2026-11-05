@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -307,11 +308,33 @@ func installPayload(ctx context.Context, c *cache, serial *serialCapture, additi
 	return nil
 }
 
+func preparePayloadDestinations(ctx context.Context, c *cache, serial *serialCapture, additions []payloadEntry) error {
+	if err := installFile(ctx, c, serial, targetPayloadRunner, nil, digest(nil), 0755); err != nil {
+		return fmt.Errorf("prepare stable SSH payload runner: %w", err)
+	}
+	fmt.Fprintf(c.out, "Prepared stable SSH payload runner %s\n", targetPayloadRunner)
+	for _, addition := range additions {
+		a := asset{Role: "payload", SHA256: addition.SHA256, Size: addition.Size}
+		if err := verifyFile(ctx, c.object(a), a); err != nil {
+			return err
+		}
+		if err := installFile(ctx, c, serial, addition.Destination, nil, digest(nil), 0755); err != nil {
+			return fmt.Errorf("prepare SSH payload destination %s: %w", addition.Destination, err)
+		}
+		fmt.Fprintf(c.out, "Prepared SSH payload destination %s\n", addition.Destination)
+	}
+	return nil
+}
+
 func installPayloadFile(ctx context.Context, c *cache, serial *serialCapture, destination string, b []byte, sha string) error {
 	return installFile(ctx, c, serial, destination, b, sha, 0755)
 }
 
 func installFile(ctx context.Context, c *cache, serial *serialCapture, destination string, b []byte, sha string, mode uint32) error {
+	parent := filepath.Dir(destination)
+	if response, err := rootExec(ctx, serial, remoteCommand([]string{"/bin/mkdir", "-p", parent})); err != nil {
+		return fmt.Errorf("prepare parent %s: %w: %s", parent, err, response)
+	}
 	stage := "/private/var/tmp/payload-" + sha[:16]
 	begin := fmt.Sprintf("put_begin|%s|%d|%s|%o", hex.EncodeToString([]byte(stage)), len(b), sha, mode)
 	if response, err := rootRequest(ctx, serial, begin); err != nil {
@@ -349,7 +372,7 @@ func installFile(ctx context.Context, c *cache, serial *serialCapture, destinati
 	if response, err := rootRequest(ctx, serial, "put_commit"); err != nil {
 		return fmt.Errorf("commit %s: %w: %s", destination, err, response)
 	}
-	command := "/bin/mv " + stage + " " + destination
+	command := remoteCommand([]string{"/bin/mv", stage, destination})
 	if response, err := rootExec(ctx, serial, command); err != nil {
 		return fmt.Errorf("install %s: %w: %s", destination, err, response)
 	}

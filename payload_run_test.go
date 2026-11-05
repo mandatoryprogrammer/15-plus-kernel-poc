@@ -11,9 +11,10 @@ import (
 )
 
 func TestParsePayloadRunOwnsArgumentsAndIncludes(t *testing.T) {
-	source, destination, includes, arguments, err := parsePayloadRun([]string{
+	source, destination, includes, environment, arguments, err := parsePayloadRun([]string{
 		"tool", "--dest", "/usr/local/bin/ui-tool",
 		"--include", "libui.dylib=/usr/local/lib/libui.dylib",
+		"--env", "DYLD_FRAMEWORK_PATH=/usr/local/lib",
 		"--", "--frame", "caller value",
 	})
 	if err != nil {
@@ -21,11 +22,15 @@ func TestParsePayloadRunOwnsArgumentsAndIncludes(t *testing.T) {
 	}
 	if source != "tool" || destination != "/usr/local/bin/ui-tool" || len(includes) != 1 ||
 		includes[0] != [2]string{"libui.dylib", "/usr/local/lib/libui.dylib"} ||
+		len(environment) != 1 || environment[0] != "DYLD_FRAMEWORK_PATH=/usr/local/lib" ||
 		len(arguments) != 2 || arguments[0] != "--frame" || arguments[1] != "caller value" {
-		t.Fatalf("parsed run changed: source=%q destination=%q includes=%v arguments=%v", source, destination, includes, arguments)
+		t.Fatalf("parsed run changed: source=%q destination=%q includes=%v environment=%v arguments=%v", source, destination, includes, environment, arguments)
 	}
-	if _, _, _, _, err = parsePayloadRun([]string{"tool", "unquoted-target-argument"}); err == nil {
+	if _, _, _, _, _, err = parsePayloadRun([]string{"tool", "unquoted-target-argument"}); err == nil {
 		t.Fatal("target argument without -- accepted")
+	}
+	if _, _, _, _, _, err = parsePayloadRun([]string{"tool", "--env", "BAD-NAME=value"}); err == nil {
+		t.Fatal("invalid environment accepted")
 	}
 	if _, _, err = splitPayloadInclude("lib=/tmp/lib"); err == nil {
 		t.Fatal("unsafe include destination accepted")
@@ -52,8 +57,11 @@ func TestPayloadRunPreparationAndAdmissionFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared.Entry.CDHash == "" || prepared.Entry.SHA256 == "" || prepared.FileType != 2 || !prepared.Signed || !prepared.LCUUIDAdded {
+	if prepared.Entry.CDHash == "" || prepared.Entry.SHA256 == "" || prepared.FileType != 2 || !prepared.Signed || !prepared.LCUUIDAdded || !prepared.LinkerSigned {
 		t.Fatalf("prepared payload changed: %+v", prepared)
+	}
+	if flags := primaryCodeDirectoryFlagsForTest(t, prepared.Body); flags&2 == 0 || flags&callerLinkerSignedFlag == 0 {
+		t.Fatalf("caller admission flags=%#x", flags)
 	}
 	changed, err := storePayloadPlan(context.Background(), c, []preparedPayload{prepared})
 	if err != nil || !changed {
@@ -67,6 +75,21 @@ func TestPayloadRunPreparationAndAdmissionFingerprint(t *testing.T) {
 	if err != nil || len(first) != 64 {
 		t.Fatalf("fingerprint=%q err=%v", first, err)
 	}
+	secondSource := filepath.Join(root, "probe-two")
+	if err = os.WriteFile(secondSource, unsigned, 0600); err != nil {
+		t.Fatal(err)
+	}
+	secondPayload, err := preparePayload(secondSource, "/usr/local/bin/probe-two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = storePayloadPlan(context.Background(), c, []preparedPayload{secondPayload}); err != nil {
+		t.Fatal(err)
+	}
+	unchanged, err := payloadAdmissionFingerprint(c)
+	if err != nil || unchanged != first {
+		t.Fatalf("caller payload changed boot policy fingerprint: first=%s second=%s err=%v", first, unchanged, err)
+	}
 	if err = writeTrustAdditions(c, []trustEntry{{Name: "runtime", CDHash: strings.Repeat("ab", 20), Origin: "test"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -77,6 +100,28 @@ func TestPayloadRunPreparationAndAdmissionFingerprint(t *testing.T) {
 	if _, err = os.Stat(c.object(asset{SHA256: prepared.Entry.SHA256})); err != nil {
 		t.Fatalf("prepared payload object absent: %v", err)
 	}
+}
+
+func primaryCodeDirectoryFlagsForTest(t *testing.T, body []byte) uint32 {
+	t.Helper()
+	le, be := binary.LittleEndian, binary.BigEndian
+	at := 32
+	for index := 0; index < int(le.Uint32(body[16:])); index++ {
+		size := int(le.Uint32(body[at+4:]))
+		if le.Uint32(body[at:]) == 0x1d {
+			offset := int(le.Uint32(body[at+8:]))
+			signature := body[offset : offset+int(le.Uint32(body[at+12:]))]
+			for entry := 0; entry < int(be.Uint32(signature[8:])); entry++ {
+				row := signature[12+entry*8:]
+				if be.Uint32(row) == 0 {
+					return be.Uint32(signature[int(be.Uint32(row[4:]))+12:])
+				}
+			}
+		}
+		at += size
+	}
+	t.Fatal("primary CodeDirectory absent")
+	return 0
 }
 
 func TestPayloadRunReportReplacesPriorResult(t *testing.T) {

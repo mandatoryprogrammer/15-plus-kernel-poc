@@ -16,7 +16,8 @@ func main() {
 	// asynchronous preemption signal interrupts their Mach wait. Relaunch once
 	// with that signal disabled; cooperative scheduling remains enabled.
 	payloadRun := len(os.Args) > 2 && os.Args[1] == "payload" && os.Args[2] == "run"
-	if len(os.Args) > 1 && (os.Args[1] == "shell" || os.Args[1] == "exec" || os.Args[1] == "serial-exec" || os.Args[1] == "serial-start-ssh" || os.Args[1] == "doctor" || os.Args[1] == "reset" || payloadRun) {
+	uiRun := len(os.Args) > 2 && os.Args[1] == "ui" && os.Args[2] == "run"
+	if len(os.Args) > 1 && (os.Args[1] == "shell" || os.Args[1] == "exec" || os.Args[1] == "serial-exec" || os.Args[1] == "serial-start-ssh" || os.Args[1] == "doctor" || os.Args[1] == "reset" || payloadRun || uiRun) {
 		debug := os.Getenv("GODEBUG")
 		if !strings.HasSuffix(debug, "asyncpreemptoff=1") {
 			exe, err := os.Executable()
@@ -40,7 +41,7 @@ func main() {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: 15-plus-kernel-poc shell | exec -- COMMAND | serial-exec -- COMMAND | serial-start-ssh | iboot analyze SNAPSHOT | iboot patch SNAPSHOT | iboot verify ORIGINAL PATCHED | payload list | payload add FILE [--dest PATH] | payload run FILE [--dest PATH] [--include FILE=DEST]... [-- ARG...] | payload remove PATH | payload install-ssh | trust list | trust import FILE | assets fetch | assets import bootstrap DIRECTORY | doctor | reset")
+		return errors.New("usage: 15-plus-kernel-poc shell | exec -- COMMAND | ui import DIRECTORY | ui status | ui run | payload run FILE | cache gc | doctor | reset")
 	}
 	root, err := projectRoot()
 	if err != nil {
@@ -87,6 +88,13 @@ func run(ctx context.Context, args []string) error {
 		return serialStartSSH(ctx, cache)
 	case "assets":
 		return assetsCommand(ctx, cache, args[1:])
+	case "ui":
+		return uiCommand(ctx, cache, args[1:])
+	case "cache":
+		if len(args) >= 2 && args[1] == "gc" {
+			return cacheGCCommand(cache, args[2:])
+		}
+		return errors.New("usage: cache gc [--dry-run]")
 	case "payload":
 		if len(args) == 2 && args[1] == "list" {
 			return listPayload(cache, os.Stdout)

@@ -42,6 +42,7 @@ func packedPlatformVersion(version string) (uint32, error) {
 }
 
 var reservedPayloadDestinations = map[string]bool{
+	"/usr/local/bin/payload-runner":            true,
 	"/usr/local/bin/console-service":           true,
 	"/usr/local/bin/productos-pds1":            true,
 	"/usr/local/bin/productos-restore-utility": true,
@@ -120,10 +121,15 @@ func validPayloadDestination(destination string) bool {
 		return false
 	}
 	directory := path.Dir(destination)
-	if directory != "/usr/local/bin" && directory != "/usr/local/lib" && directory != "/usr/local/libexec" {
+	if directory != "/usr/local/bin" && directory != "/usr/local/libexec" && directory != "/usr/local/lib" && !strings.HasPrefix(directory, "/usr/local/lib/") {
 		return false
 	}
-	return path.Base(destination) != "." && path.Base(destination) != ".."
+	for _, component := range strings.Split(strings.TrimPrefix(destination, "/"), "/") {
+		if component == "" || component == "." || component == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // inspectExecutable accepts thin iOS arm64/arm64e executables, dylibs, and
@@ -373,7 +379,7 @@ func adHocSignExecutable(input []byte, identifier string) ([]byte, error) {
 	be.PutUint32(codeDirectory, 0xfade0c02)
 	be.PutUint32(codeDirectory[4:], uint32(codeDirectorySize))
 	be.PutUint32(codeDirectory[8:], 0x20001)
-	be.PutUint32(codeDirectory[12:], 2)
+	be.PutUint32(codeDirectory[12:], 2|callerLinkerSignedFlag)
 	be.PutUint32(codeDirectory[16:], uint32(hashOffset))
 	be.PutUint32(codeDirectory[20:], 44)
 	be.PutUint32(codeDirectory[28:], uint32(codeSlots))
@@ -510,6 +516,70 @@ type preparedPayload struct {
 	FileType     macho.Type
 	Signed       bool
 	LCUUIDAdded  bool
+	LinkerSigned bool
+}
+
+// enableCallerLinkerSigned marks an existing ad-hoc primary CodeDirectory for
+// the runtime's identifier-independent caller admission path. The flags live
+// inside the CodeDirectory, so this changes its CDHash but no executable page
+// or entitlement bytes. Non-ad-hoc signatures retain native handling and are
+// rejected instead of being silently reclassified.
+func enableCallerLinkerSigned(input []byte) ([]byte, bool, error) {
+	if len(input) < 32 || binary.LittleEndian.Uint32(input) != 0xfeedfacf {
+		return nil, false, errors.New("caller admission requires a thin little-endian 64-bit Mach-O")
+	}
+	le, be := binary.LittleEndian, binary.BigEndian
+	ncmds, commandsSize := int(le.Uint32(input[16:])), int(le.Uint32(input[20:]))
+	at, signatureOffset, signatureSize := 32, -1, 0
+	for index := 0; index < ncmds; index++ {
+		if at > 32+commandsSize-8 {
+			return nil, false, errors.New("truncated Mach-O load command during caller admission")
+		}
+		command, size := le.Uint32(input[at:]), int(le.Uint32(input[at+4:]))
+		if size < 8 || size&7 != 0 || at+size > 32+commandsSize {
+			return nil, false, errors.New("invalid Mach-O load command during caller admission")
+		}
+		if command == 0x1d {
+			if size != 16 || signatureOffset >= 0 {
+				return nil, false, errors.New("invalid code-signature command during caller admission")
+			}
+			signatureOffset, signatureSize = int(le.Uint32(input[at+8:])), int(le.Uint32(input[at+12:]))
+		}
+		at += size
+	}
+	if signatureOffset <= 0 || signatureSize < 20 || signatureOffset > len(input)-signatureSize {
+		return nil, false, errors.New("caller admission requires an embedded CodeDirectory")
+	}
+	output := bytes.Clone(input)
+	signature := output[signatureOffset : signatureOffset+signatureSize]
+	if be.Uint32(signature) != 0xfade0cc0 || int(be.Uint32(signature[4:])) > len(signature) {
+		return nil, false, errors.New("invalid signature superblob during caller admission")
+	}
+	count := int(be.Uint32(signature[8:]))
+	if count < 1 || count > 1024 || 12+count*8 > len(signature) {
+		return nil, false, errors.New("invalid signature index during caller admission")
+	}
+	primary := -1
+	for index := 0; index < count; index++ {
+		entry := signature[12+index*8:]
+		if be.Uint32(entry) == 0 {
+			primary = int(be.Uint32(entry[4:]))
+			break
+		}
+	}
+	if primary < 0 || primary > len(signature)-44 || be.Uint32(signature[primary:]) != 0xfade0c02 {
+		return nil, false, errors.New("primary CodeDirectory missing during caller admission")
+	}
+	flags := be.Uint32(signature[primary+12:])
+	if flags&2 == 0 {
+		return nil, false, errors.New("caller admission accepts unsigned or existing ad-hoc binaries; this signature is not ad-hoc")
+	}
+	wanted := flags | callerLinkerSignedFlag
+	if wanted == flags {
+		return output, false, nil
+	}
+	be.PutUint32(signature[primary+12:], wanted)
+	return output, true, nil
 }
 
 // addDeterministicLCUUID fills existing Mach-O header padding without moving
@@ -667,12 +737,35 @@ func preparePayload(source, destination string) (preparedPayload, error) {
 	if inspectErr != nil {
 		return result, inspectErr
 	}
+	b, _, err = enableCallerLinkerSigned(b)
+	if err != nil {
+		return result, err
+	}
+	cdhash, err = inspectExecutable(b)
+	if err != nil {
+		return result, err
+	}
+	result.LinkerSigned = true
 	result.Body = b
 	result.Entry = payloadEntry{Destination: destination, SHA256: digest(b), Size: int64(len(b)), CDHash: cdhash, Origin: "user addition"}
 	return result, nil
 }
 
 func storePayloadPlan(ctx context.Context, c *cache, prepared []preparedPayload) (bool, error) {
+	return storePayloadPlanScope(ctx, c, prepared, false)
+}
+
+// storePayloadRunPlan replaces only additions owned by the high-level run
+// command. Deliberate `payload add` entries remain persistent, while one-off
+// experiments and their content objects cannot accumulate indefinitely.
+func storePayloadRunPlan(ctx context.Context, c *cache, prepared []preparedPayload) (bool, error) {
+	for index := range prepared {
+		prepared[index].Entry.Origin = "payload run"
+	}
+	return storePayloadPlanScope(ctx, c, prepared, true)
+}
+
+func storePayloadPlanScope(ctx context.Context, c *cache, prepared []preparedPayload, replaceRun bool) (bool, error) {
 	base, err := basePayload()
 	if err != nil {
 		return false, err
@@ -684,6 +777,15 @@ func storePayloadPlan(ctx context.Context, c *cache, prepared []preparedPayload)
 	before, err := json.Marshal(additions)
 	if err != nil {
 		return false, err
+	}
+	if replaceRun {
+		kept := additions[:0]
+		for _, entry := range additions {
+			if entry.Origin != "payload run" {
+				kept = append(kept, entry)
+			}
+		}
+		additions = kept
 	}
 	for _, candidate := range prepared {
 		for i := range additions {

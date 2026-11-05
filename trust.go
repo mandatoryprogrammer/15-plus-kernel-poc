@@ -141,6 +141,17 @@ func trustPayloadEntries(entries []trustEntry) []payloadEntry {
 	return result
 }
 
+func bootTrustAdditions(entries []trustEntry) []trustEntry {
+	result := make([]trustEntry, 0, len(entries))
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name, "dyld_shared_cache_arm64e") {
+			continue
+		}
+		result = append(result, entry)
+	}
+	return result
+}
+
 func importTrust(c *cache, args []string) error {
 	if len(args) != 1 {
 		return errors.New("usage: trust import FILE")

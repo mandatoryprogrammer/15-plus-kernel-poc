@@ -25,7 +25,7 @@ If the temporary environment is already running, `shell` reconnects to it. Other
 - **Initial iBoot checks:** the CLI finds the Image4 policy and signature-failure paths, checks their original instructions, and patches them in RAM.
 - **Runtime iBEC checks:** the CLI redirects the policy-failure branch to its decoded success path. It also updates iBEC's trust-cache digest for the cache used in that boot.
 - **Kernel Image4 policy:** the CLI removes device-bound ticket fields from the kernel's embedded policy. It finds and updates the ARM64 instruction that supplies the policy length.
-- **AMFI and executable trust:** the CLI checks arm64 and arm64e payloads, signs compatible unsigned files, and adds their cdhashes to the temporary trust cache.
+- **AMFI and executable trust:** the CLI checks arm64 and arm64e payloads, deterministically ad-hoc signs compatible unsigned files, marks caller-owned CodeDirectories as linker-signed, and uses one identifier-independent in-memory authorization gate. New payloads hot-upload over authenticated SSH and do not require a new trust-cache or boot image.
 - **TXM and SPTM handoff:** the CLI checks and uploads the matching TXM and SPTM components. It does not patch their binaries.
 - **Root and boot arguments:** the CLI finds iBEC's root-selection state and changes it to use the generated ramdisk with serial debugging.
 - **Temporary result:** reset removes the patches, trust-cache entries, payload, root filesystem, SSH service, and keys. Installed storage remains unchanged.
@@ -60,6 +60,10 @@ go build -mod=vendor -o 15-plus-kernel-poc .
 | `go run . payload add FILE --dest /usr/local/bin/NAME` | Select its destination. |
 | `go run . payload run FILE -- ARG...` | Import/sign, trust, boot or reuse, verify, and execute one caller-provided binary end to end. |
 | `go run . payload run FILE --include LIB=/usr/local/lib/LIB -- ARG...` | Include and admit a dylib dependency in the same transaction. |
+| `go run . ui import DIRECTORY` | Verify and content-address the complete MonkeyBars/iRemoteFramebuffer bundle once. |
+| `go run . ui run` | Reuse or boot the phone, sign and hot-upload the UI executable and framework, route ProductOS libraries, and launch the normal remote-screen service arguments. |
+| `go run . cache gc --dry-run` | Review only the owned build/test scratch eligible for deletion. |
+| `go run . cache gc` | Delete that scratch while protecting firmware objects, device state, logs, and loader analysis. |
 | `go run . assets fetch` | Fetch and verify public Apple assets. |
 | `go run . assets import bootstrap DIR` | Import the prepared, board-portable runtime objects. |
 | `go run . doctor` | Validate the Mac, phone, Recovery USB, and probe identities. |
@@ -112,23 +116,51 @@ go run . payload run /path/to/tool --dest /usr/local/bin/tool -- caller-argument
 
 `payload run` verifies or deterministically ad-hoc signs the Mach-O, adds a
 missing `LC_UUID` in reserved header padding, recomputes the affected
-CodeDirectory page hashes, derives the CDHash, updates the temporary trust
-cache and iBEC binding, and records a fingerprint for the complete admission
-set. It reuses a live target only when the target's volatile receipt matches
-that fingerprint. Otherwise it returns the board to Recovery and performs the
-normal tethered boot. Before execution, it reads every installed byte back over
-authenticated SSH and compares it with the verified host object. Arguments are
-sent as an SSH argument vector rather than interpolated into a shell command.
+CodeDirectory page hashes, marks the ad-hoc CodeDirectory `CS_LINKER_SIGNED`,
+derives its CDHash, and records a fingerprint for the boot-level admission
+policy. The checked kernel gate admits any structurally valid caller-owned
+`CS_ADHOC|CS_LINKER_SIGNED` CodeDirectory while preserving native success and
+failure handling for every other input. Consequently, changing a payload does
+not rebuild iBEC, the trust cache, ramdisk, or kernel. The CLI reuses a live
+target whose volatile policy receipt matches, uploads through authenticated
+SSH, reads every byte back, and executes it. Arguments and validated `--env
+NAME=VALUE` entries are sent as an SSH argument vector rather than interpolated
+into a shell command.
 
 Use repeated `--include FILE=/usr/local/lib/NAME` or
 `--include FILE=/usr/local/libexec/NAME` options for caller-provided Mach-O
-dependencies. System dylib paths remain the responsibility of the selected
-runtime. The latest structured result replaces
+dependencies. The CLI also walks the main input's local tree for unresolved
+`@rpath`, `@loader_path`, and `@executable_path` dependencies, fails on an
+ambiguous match, signs them, and stages them below `/usr/local/lib`. Absolute
+ProductOS dylib paths remain the responsibility of the selected runtime. The
+latest structured result replaces
 `.cache/private/payload-run-latest.json`; successful unchanged reruns reuse the
-running phone without a boot. Content objects created by the payload importer
-are indexed and removed automatically after replacement or `payload remove`,
+are indexed and removed automatically after the next run or `payload remove`,
 while prepared boot objects and pre-existing cache content are never eligible
 for that cleanup.
+
+### One-command remote UI
+
+Import the recovered, version-matched InternalUI bundle once:
+
+```sh
+go run . ui import /path/to/16.0-internalui-20A5312i
+go run . ui run
+```
+
+The import requires the complete provenance, SystemVersion, MonkeyBars,
+iRemoteFramebuffer, framework metadata, launchd plists, and Lockdown service
+plists. It copies all 12 exact files into the ignored content-addressed cache;
+later runs do not depend on the original directory. `ui run` automatically
+normalizes signatures, stages the caller-owned framework, sets ProductOS root,
+framework, and shared-cache locations, and uses MonkeyBars' normal screen
+service arguments. Use `ui run -- -h` for a bounded help probe.
+
+Run `cache gc --dry-run` to review disposable test/build scratch, then `cache
+gc` to remove it. High-level payload runs also prune abandoned files older than
+24 hours from the tool-owned `.cache/tmp` directory. Immutable objects,
+`.cache/private`, logs, the canonical Go caches, and loader-analysis evidence
+are never candidates.
 
 ## Boot process
 

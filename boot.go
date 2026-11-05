@@ -171,12 +171,10 @@ func prepareRuntime(ctx context.Context, c *cache) (map[string][]byte, runtimeLa
 		}
 		images[row.Role] = component
 	}
-	additions, err := loadPayloadAdditions(c)
-	if err != nil {
-		return nil, runtimeLayout{}, err
-	}
-	admissions := append([]payloadEntry{}, additions...)
-	admissions = append(admissions, trustPayloadEntries(trustAdditions)...)
+	// Caller payloads are admitted by the structural CS_ADHOC|
+	// CS_LINKER_SIGNED kernel gate and transferred after SSH is available. Only
+	// legacy trust-only rows still alter the boot trust cache and iBEC binding.
+	admissions := trustPayloadEntries(bootTrustAdditions(trustAdditions))
 	layout, err := preparePayloadTrust(images, admissions)
 	if err != nil {
 		return nil, runtimeLayout{}, fmt.Errorf("prepare payload admission: %w", err)
@@ -526,7 +524,7 @@ func bootLocked(ctx context.Context, c *cache, terminal bool, command []string) 
 	if err != nil {
 		return err
 	}
-	if err = installPayload(ctx, c, serial, additions); err != nil {
+	if err = preparePayloadDestinations(ctx, c, serial, additions); err != nil {
 		return err
 	}
 	admissionFingerprint, err := payloadAdmissionFingerprint(c)
