@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -52,6 +53,25 @@ func TestPayloadExecutionTimeoutAppliesOnlyWhenExplicit(t *testing.T) {
 	}
 	if timeout := payloadExecutionTimeout(withPayloadExecutionTimeout(base, -time.Second)); timeout != 0 {
 		t.Fatalf("negative execution timeout was accepted: %s", timeout)
+	}
+}
+
+func TestPayloadExecutionDeadlineClassificationHandlesSSHExitRace(t *testing.T) {
+	exitErr := errors.New("remote process exited with signal KILL")
+	timeout := 10 * time.Second
+	if payloadExecutionDeadlineReached(context.Background(), nil, timeout, timeout) {
+		t.Fatal("successful target exit classified as timeout")
+	}
+	if payloadExecutionDeadlineReached(context.Background(), exitErr, 9*time.Second, timeout) {
+		t.Fatal("early target failure classified as timeout")
+	}
+	if !payloadExecutionDeadlineReached(context.Background(), exitErr, timeout-100*time.Millisecond, timeout) {
+		t.Fatal("near-deadline SSH signal race was not classified as timeout")
+	}
+	deadline, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if !payloadExecutionDeadlineReached(deadline, exitErr, time.Second, timeout) {
+		t.Fatal("expired execution context was not classified as timeout")
 	}
 }
 

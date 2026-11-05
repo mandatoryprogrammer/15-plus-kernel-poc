@@ -39,6 +39,21 @@ func payloadExecutionTimeout(ctx context.Context) time.Duration {
 	return timeout
 }
 
+func payloadExecutionDeadlineReached(ctx context.Context, executionErr error, elapsed, timeout time.Duration) bool {
+	if timeout <= 0 || executionErr == nil {
+		return false
+	}
+	if ctx.Err() == context.DeadlineExceeded || errors.Is(executionErr, context.DeadlineExceeded) {
+		return true
+	}
+	// The SSH server can publish a deadline-induced signal exit immediately
+	// before the local timer goroutine publishes context.DeadlineExceeded. Treat
+	// only a non-zero terminal within one scheduler allowance of the owned
+	// deadline as that deadline; ordinary early target failures remain distinct.
+	const schedulerAllowance = 250 * time.Millisecond
+	return elapsed+schedulerAllowance >= timeout
+}
+
 type payloadExecutionProgress struct {
 	Transferred   bool
 	ExactReadback bool
@@ -314,9 +329,11 @@ func runPreparedPayload(ctx context.Context, c *cache, main payloadEntry, includ
 			fmt.Fprintf(c.out, "Target execution deadline: %s\n", timeout)
 		}
 		defer executionCancel()
+		executionStarted := time.Now()
 		executionErr := runSSH(executionCtx, access, false, command, os.Stdin, targetOutput, targetError)
-		if executionCtx.Err() == context.DeadlineExceeded || errors.Is(executionErr, context.DeadlineExceeded) {
-			return fmt.Errorf("%w after %s: %v", errPayloadExecutionTimeout, payloadExecutionTimeout(ctx), executionErr)
+		executionTimeout := payloadExecutionTimeout(ctx)
+		if payloadExecutionDeadlineReached(executionCtx, executionErr, time.Since(executionStarted), executionTimeout) {
+			return fmt.Errorf("%w after %s: %v", errPayloadExecutionTimeout, executionTimeout, executionErr)
 		}
 		return executionErr
 	})
