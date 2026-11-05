@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestServiceChainManifestAndLauncherArguments(t *testing.T) {
@@ -83,6 +84,61 @@ func TestServiceChainRejectsUnknownDuplicateAndDrift(t *testing.T) {
 		if err := validateServiceChainManifest(value); err == nil {
 			t.Fatalf("invalid service chain accepted: %+v", value)
 		}
+	}
+}
+
+func TestServiceChainExecutionTimeoutDefaultAndValidatedOverride(t *testing.T) {
+	base := serviceChainManifest{
+		Schema:   serviceChainSchema,
+		Name:     "display",
+		Services: []string{"hidd.nonui"},
+	}
+	timeout, err := serviceChainExecutionTimeout(base)
+	if err != nil || timeout != 10*time.Second {
+		t.Fatalf("compatibility timeout=%s err=%v, want 10s", timeout, err)
+	}
+	base.ExecutionTimeout = "16s"
+	timeout, err = serviceChainExecutionTimeout(base)
+	if err != nil || timeout != 16*time.Second {
+		t.Fatalf("manifest timeout=%s err=%v, want 16s", timeout, err)
+	}
+	if err = validateServiceChainManifest(base); err != nil {
+		t.Fatalf("validated 16s timeout rejected: %v", err)
+	}
+	for _, value := range []string{"0s", "-1s", "999ms", "5m1s", "not-a-duration"} {
+		invalid := base
+		invalid.ExecutionTimeout = value
+		if _, err = serviceChainExecutionTimeout(invalid); err == nil {
+			t.Fatalf("invalid service-chain execution timeout accepted: %q", value)
+		}
+		if err = validateServiceChainManifest(invalid); err == nil {
+			t.Fatalf("manifest accepted invalid execution timeout: %q", value)
+		}
+	}
+}
+
+func TestDefaultDisplayChainSelectsReportedExecutionTimeout(t *testing.T) {
+	manifest, _, err := loadServiceChainManifest("examples/productos-display-chain.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	timeout, err := serviceChainExecutionTimeout(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if timeout < 16*time.Second {
+		t.Fatalf("default display-chain timeout=%s, want at least 16s", timeout)
+	}
+	report := newServiceChainReport("manifest.json", "manifest-sha",
+		manifest, []string{"-h"}, uiProgram{SHA256: "program-sha"}, timeout)
+	if report.ExecutionTimeout != "16s" {
+		t.Fatalf("reported execution timeout=%q, want 16s", report.ExecutionTimeout)
+	}
+	if report.Manifest != "manifest.json" ||
+		report.ManifestSHA256 != "manifest-sha" ||
+		report.Program.SHA256 != "program-sha" ||
+		!reflect.DeepEqual(report.Arguments, []string{"-h"}) {
+		t.Fatalf("initial report lost run identity: %+v", report)
 	}
 }
 

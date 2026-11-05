@@ -16,7 +16,12 @@ import (
 	"time"
 )
 
-const serviceChainSchema = "15-plus-kernel-poc.service-chain.v1"
+const (
+	serviceChainSchema                  = "15-plus-kernel-poc.service-chain.v1"
+	defaultServiceChainExecutionTimeout = 10 * time.Second
+	minimumServiceChainExecutionTimeout = 1 * time.Second
+	maximumServiceChainExecutionTimeout = 5 * time.Minute
+)
 
 var serviceChainRegistry = map[string]struct {
 	Label      string
@@ -30,9 +35,10 @@ var serviceChainRegistry = map[string]struct {
 var machServiceName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,127}$`)
 
 type serviceChainManifest struct {
-	Schema   string   `json:"schema"`
-	Name     string   `json:"name"`
-	Services []string `json:"services"`
+	Schema           string   `json:"schema"`
+	Name             string   `json:"name"`
+	Services         []string `json:"services"`
+	ExecutionTimeout string   `json:"execution_timeout,omitempty"`
 }
 
 type serviceChainReport struct {
@@ -130,6 +136,20 @@ func markerContains(markers []string, fragment string) bool {
 	return false
 }
 
+func serviceChainExecutionTimeout(value serviceChainManifest) (time.Duration, error) {
+	if value.ExecutionTimeout == "" {
+		return defaultServiceChainExecutionTimeout, nil
+	}
+	timeout, err := time.ParseDuration(value.ExecutionTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("service-chain execution_timeout %q: %w", value.ExecutionTimeout, err)
+	}
+	if timeout < minimumServiceChainExecutionTimeout || timeout > maximumServiceChainExecutionTimeout {
+		return 0, fmt.Errorf("service-chain execution_timeout must be between %s and %s", minimumServiceChainExecutionTimeout, maximumServiceChainExecutionTimeout)
+	}
+	return timeout, nil
+}
+
 func validateServiceChainManifest(value serviceChainManifest) error {
 	if value.Schema != serviceChainSchema {
 		return fmt.Errorf("service-chain schema %q, want %q", value.Schema, serviceChainSchema)
@@ -149,6 +169,9 @@ func validateServiceChainManifest(value serviceChainManifest) error {
 			return fmt.Errorf("service-chain service %q is duplicated", service)
 		}
 		seen[service] = true
+	}
+	if _, err := serviceChainExecutionTimeout(value); err != nil {
+		return err
 	}
 	return nil
 }
@@ -226,8 +249,24 @@ func serviceChainRunArguments(c *cache, profile uiProfile, manifest serviceChain
 	return uiPayloadRunArgumentsMode(c, profile, "--service-chain-v1", []string{strings.Join(manifest.Services, ",")}, programArguments)
 }
 
+func newServiceChainReport(manifestPath, manifestHash string,
+	manifest serviceChainManifest, programArguments []string,
+	program uiProgram, executionTimeout time.Duration) serviceChainReport {
+	return serviceChainReport{
+		Schema: "15-plus-kernel-poc.service-chain-report.v1", StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Manifest: manifestPath, ManifestSHA256: manifestHash, Name: manifest.Name,
+		Services: append([]string(nil), manifest.Services...), LauncherMode: "--service-chain-v1",
+		Arguments: append([]string(nil), programArguments...), Program: program,
+		ExecutionTimeout: executionTimeout.String(), Exit: "running",
+	}
+}
+
 func runServiceChain(ctx context.Context, c *cache, manifestPath string, programArguments []string) (runErr error) {
 	manifest, manifestHash, err := loadServiceChainManifest(manifestPath)
+	if err != nil {
+		return err
+	}
+	executionTimeout, err := serviceChainExecutionTimeout(manifest)
 	if err != nil {
 		return err
 	}
@@ -246,13 +285,8 @@ func runServiceChain(ctx context.Context, c *cache, manifestPath string, program
 	if err != nil {
 		return err
 	}
-	report := serviceChainReport{
-		Schema: "15-plus-kernel-poc.service-chain-report.v1", StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
-		Manifest: manifestPath, ManifestSHA256: manifestHash, Name: manifest.Name,
-		Services: append([]string(nil), manifest.Services...), LauncherMode: "--service-chain-v1",
-		Arguments: append([]string(nil), programArguments...), Program: *profile.Program,
-		ExecutionTimeout: (10 * time.Second).String(), Exit: "running",
-	}
+	report := newServiceChainReport(manifestPath, manifestHash, manifest,
+		programArguments, *profile.Program, executionTimeout)
 	if err = writePrivateJSON(c, "service-chain-run", report); err != nil {
 		return fmt.Errorf("write initial service-chain report: %w", err)
 	}
@@ -268,7 +302,7 @@ func runServiceChain(ctx context.Context, c *cache, manifestPath string, program
 			runErr = errors.Join(runErr, fmt.Errorf("write service-chain report: %w", reportErr))
 		}
 	}()
-	fmt.Fprintf(c.out, "Launching service chain %q in order %s through the imported ProductOS root launcher\n", manifest.Name, strings.Join(manifest.Services, " -> "))
+	fmt.Fprintf(c.out, "Launching service chain %q in order %s through the imported ProductOS root launcher (target execution deadline %s)\n", manifest.Name, strings.Join(manifest.Services, " -> "), executionTimeout)
 	originalOutput := c.targetOut
 	outputWriter := originalOutput
 	if outputWriter == nil {
@@ -282,7 +316,7 @@ func runServiceChain(ctx context.Context, c *cache, manifestPath string, program
 		errorWriter = os.Stderr
 	}
 	c.targetErr = io.MultiWriter(errorWriter, capture)
-	runErr = runPayload(withPayloadExecutionTimeout(ctx, 10*time.Second), c, runArguments)
+	runErr = runPayload(withPayloadExecutionTimeout(ctx, executionTimeout), c, runArguments)
 	c.targetOut = originalOutput
 	c.targetErr = originalError
 	captured, truncated := capture.snapshot()

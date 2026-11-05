@@ -245,6 +245,12 @@ removes the temporary descriptor, and rolls back already-started jobs in reverse
 order if a later stage fails. Unknown or duplicate service names fail on the
 host before device contact.
 
+An optional manifest `execution_timeout` uses Go duration syntax and bounds
+only the final target-side service-chain/program execution. Omitted fields keep
+the compatibility default of 10 seconds; configured values must be between one
+second and five minutes. The tracked default display chain selects 16 seconds,
+and the resolved value is written to `service-chain-run-latest.json`.
+
 Once RFB is available, `ui verify` is the acceptance operation rather than a
 process or socket check:
 
