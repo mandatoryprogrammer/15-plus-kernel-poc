@@ -165,6 +165,45 @@ func TestProbeBuildRequiresTwoIdenticalBuildsThenNormalizes(t *testing.T) {
 	}
 }
 
+func TestProbeBuildSignsAndReportsSourceDeclaredEntitlements(t *testing.T) {
+	const key = "com.apple.private.xpc.launchd.job-manager"
+	xml := []byte(`<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>` + key + `</key><true/></dict></plist>`)
+	c := newProbeTestCache(t)
+	installFakeXcrun(t, unsignedRuntimeMachOEntitlementsFixture(xml), false)
+	inputRoot := t.TempDir()
+	source := filepath.Join(inputRoot, "EntitledProbe.c")
+	sysroot := filepath.Join(inputRoot, "sysroot")
+	createFakeProbeSysroot(t, sysroot)
+	if err := os.WriteFile(source, []byte("int main(void) { return 0; }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := probeCommand(context.Background(), c, []string{"build", source, "--sysroot", sysroot}); err != nil {
+		t.Fatal(err)
+	}
+	var report probeBuildReport
+	body, err := os.ReadFile(filepath.Join(c.root, "private", "probe-build-latest.json"))
+	if err != nil || json.Unmarshal(body, &report) != nil {
+		t.Fatalf("read entitlement build report: %v", err)
+	}
+	if report.Schema != "15-plus-kernel-poc.probe-build.v1" || report.Exit != "zero" ||
+		len(report.Normalized.EntitlementKeys) != 1 || report.Normalized.EntitlementKeys[0] != key ||
+		!report.Normalized.DEREntitlementsPresent || len(report.Normalized.XMLEntitlementsSHA256) != 64 ||
+		len(report.Normalized.DEREntitlementsSHA256) != 64 {
+		t.Fatalf("entitlement report is incomplete: %+v", report)
+	}
+	object, err := os.ReadFile(report.Normalized.Object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := extractEmbeddedPayloadAuthority(object)
+	if err != nil || authority == nil {
+		t.Fatalf("normalized source authority is absent: authority=%+v err=%v", authority, err)
+	}
+	if err = validateSignedPayloadAuthority(object, authority); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestProbeBuildAgainstMountedIOSRuntime(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("requires the Darwin clang driver")

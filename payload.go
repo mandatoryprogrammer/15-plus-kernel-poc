@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -21,17 +22,19 @@ import (
 )
 
 const (
-	payloadLimit                  = 64 << 20
-	machoTypeDylinker             = macho.Type(7)
-	codeDirectoryVersionExecSeg   = 0x20400
-	codeDirectoryExecSegBytes     = 88
-	codeDirectoryPagePower        = 14
-	codeDirectoryPageBytes        = 1 << codeDirectoryPagePower
-	codeDirectoryAdHocFlag        = 2
-	codeDirectoryMainBinaryFlag   = 1
-	codeSignatureRequirementsSlot = 2
-	codeSignatureCMSSlot          = 0x10000
-	codeSignatureMinimumBytes     = 0x4800
+	payloadLimit                     = 64 << 20
+	machoTypeDylinker                = macho.Type(7)
+	codeDirectoryVersionExecSeg      = 0x20400
+	codeDirectoryExecSegBytes        = 88
+	codeDirectoryPagePower           = 14
+	codeDirectoryPageBytes           = 1 << codeDirectoryPagePower
+	codeDirectoryAdHocFlag           = 2
+	codeDirectoryMainBinaryFlag      = 1
+	codeSignatureRequirementsSlot    = 2
+	codeSignatureEntitlementsSlot    = 5
+	codeSignatureDEREntitlementsSlot = 7
+	codeSignatureCMSSlot             = 0x10000
+	codeSignatureMinimumBytes        = 0x4800
 )
 
 func packedPlatformVersion(version string) (uint32, error) {
@@ -332,11 +335,350 @@ func executableSegmentContract(input []byte) (uint64, uint64, uint64, error) {
 	return first, last - first, flags, nil
 }
 
+type embeddedPayloadAuthority struct {
+	XML, XMLBlob, DERBlob []byte
+	Keys                  []string
+	Values                map[string]bool
+}
+
+func nextEntitlementXMLToken(decoder *xml.Decoder) (xml.Token, error) {
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		switch value := token.(type) {
+		case xml.CharData:
+			if strings.TrimSpace(string(value)) == "" {
+				continue
+			}
+		case xml.ProcInst, xml.Directive, xml.Comment:
+			continue
+		}
+		return token, nil
+	}
+}
+
+func entitlementXMLStart(token xml.Token, name string) (xml.StartElement, error) {
+	start, ok := token.(xml.StartElement)
+	if !ok || start.Name.Space != "" || start.Name.Local != name {
+		return xml.StartElement{}, fmt.Errorf("source entitlements expected <%s>, got %T %#v", name, token, token)
+	}
+	return start, nil
+}
+
+func decodeEntitlementKey(decoder *xml.Decoder, start xml.StartElement) (string, error) {
+	var body strings.Builder
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return "", err
+		}
+		switch value := token.(type) {
+		case xml.CharData:
+			body.Write(value)
+		case xml.EndElement:
+			if value.Name == start.Name {
+				key := body.String()
+				if key == "" || key != strings.TrimSpace(key) {
+					return "", errors.New("source entitlement key is empty or padded")
+				}
+				return key, nil
+			}
+			return "", errors.New("source entitlement key has a mismatched close tag")
+		default:
+			return "", errors.New("source entitlement key must contain only text")
+		}
+	}
+}
+
+func decodeEntitlementBoolean(decoder *xml.Decoder, start xml.StartElement) (bool, error) {
+	if start.Name.Local != "true" && start.Name.Local != "false" || start.Name.Space != "" || len(start.Attr) != 0 {
+		return false, errors.New("source entitlement value must be an attribute-free Boolean")
+	}
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return false, err
+		}
+		switch value := token.(type) {
+		case xml.CharData:
+			if strings.TrimSpace(string(value)) != "" {
+				return false, errors.New("source entitlement Boolean contains text")
+			}
+		case xml.EndElement:
+			if value.Name != start.Name {
+				return false, errors.New("source entitlement Boolean has a mismatched close tag")
+			}
+			return start.Name.Local == "true", nil
+		default:
+			return false, errors.New("source entitlement Boolean contains a nested value")
+		}
+	}
+}
+
+func parseBooleanEntitlementPlist(value []byte) (map[string]bool, []string, error) {
+	decoder := xml.NewDecoder(bytes.NewReader(value))
+	token, err := nextEntitlementXMLToken(decoder)
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err = entitlementXMLStart(token, "plist"); err != nil {
+		return nil, nil, err
+	}
+	token, err = nextEntitlementXMLToken(decoder)
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err = entitlementXMLStart(token, "dict"); err != nil {
+		return nil, nil, err
+	}
+	values := make(map[string]bool)
+	for {
+		token, err = nextEntitlementXMLToken(decoder)
+		if err != nil {
+			return nil, nil, err
+		}
+		if end, ok := token.(xml.EndElement); ok {
+			if end.Name.Space != "" || end.Name.Local != "dict" {
+				return nil, nil, errors.New("source entitlement dictionary has a mismatched close tag")
+			}
+			break
+		}
+		keyStart, startErr := entitlementXMLStart(token, "key")
+		if startErr != nil || len(keyStart.Attr) != 0 {
+			return nil, nil, errors.Join(startErr, errors.New("source entitlement dictionary requires attribute-free key/value pairs"))
+		}
+		key, keyErr := decodeEntitlementKey(decoder, keyStart)
+		if keyErr != nil {
+			return nil, nil, keyErr
+		}
+		if _, duplicate := values[key]; duplicate {
+			return nil, nil, fmt.Errorf("source entitlement key %q is duplicated", key)
+		}
+		token, err = nextEntitlementXMLToken(decoder)
+		if err != nil {
+			return nil, nil, err
+		}
+		booleanStart, ok := token.(xml.StartElement)
+		if !ok {
+			return nil, nil, fmt.Errorf("source entitlement %q lacks a Boolean value", key)
+		}
+		boolean, booleanErr := decodeEntitlementBoolean(decoder, booleanStart)
+		if booleanErr != nil {
+			return nil, nil, fmt.Errorf("source entitlement %q: %w", key, booleanErr)
+		}
+		values[key] = boolean
+	}
+	token, err = nextEntitlementXMLToken(decoder)
+	if err != nil {
+		return nil, nil, err
+	}
+	end, ok := token.(xml.EndElement)
+	if !ok || end.Name.Space != "" || end.Name.Local != "plist" {
+		return nil, nil, errors.New("source entitlement plist has a mismatched close tag")
+	}
+	if token, err = nextEntitlementXMLToken(decoder); !errors.Is(err, io.EOF) || token != nil {
+		return nil, nil, errors.New("source entitlement plist has trailing content")
+	}
+	if len(values) == 0 {
+		return nil, nil, errors.New("source entitlement dictionary is empty")
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return values, keys, nil
+}
+
+func entitlementDERTLV(tag byte, payload []byte) ([]byte, error) {
+	var length []byte
+	switch {
+	case len(payload) < 0x80:
+		length = []byte{byte(len(payload))}
+	case len(payload) <= 0xff:
+		length = []byte{0x81, byte(len(payload))}
+	case len(payload) <= 0xffff:
+		length = []byte{0x82, byte(len(payload) >> 8), byte(len(payload))}
+	default:
+		return nil, errors.New("source entitlement DER payload is too large")
+	}
+	result := make([]byte, 1+len(length)+len(payload))
+	result[0] = tag
+	copy(result[1:], length)
+	copy(result[1+len(length):], payload)
+	return result, nil
+}
+
+func entitlementBlob(magic uint32, payload []byte) []byte {
+	result := make([]byte, 8+len(payload))
+	binary.BigEndian.PutUint32(result, magic)
+	binary.BigEndian.PutUint32(result[4:], uint32(len(result)))
+	copy(result[8:], payload)
+	return result
+}
+
+func booleanEntitlementsDER(values map[string]bool, keys []string) ([]byte, error) {
+	var dictionary []byte
+	for _, key := range keys {
+		keyTLV, err := entitlementDERTLV(0x0c, []byte(key))
+		if err != nil {
+			return nil, err
+		}
+		boolean := byte(0)
+		if values[key] {
+			boolean = 0xff
+		}
+		booleanTLV, err := entitlementDERTLV(0x01, []byte{boolean})
+		if err != nil {
+			return nil, err
+		}
+		pair, err := entitlementDERTLV(0x30, append(keyTLV, booleanTLV...))
+		if err != nil {
+			return nil, err
+		}
+		dictionary = append(dictionary, pair...)
+	}
+	dictionaryTLV, err := entitlementDERTLV(0xb0, dictionary)
+	if err != nil {
+		return nil, err
+	}
+	version, err := entitlementDERTLV(0x02, []byte{1})
+	if err != nil {
+		return nil, err
+	}
+	root, err := entitlementDERTLV(0x70, append(version, dictionaryTLV...))
+	if err != nil {
+		return nil, err
+	}
+	return entitlementBlob(0xfade7172, root), nil
+}
+
+func extractEmbeddedPayloadAuthority(input []byte) (*embeddedPayloadAuthority, error) {
+	file, err := macho.NewFile(bytes.NewReader(input))
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	var source []byte
+	for _, section := range file.Sections {
+		if section.Name != "__entitlements" {
+			continue
+		}
+		if section.Seg != "__TEXT" || source != nil {
+			return nil, errors.New("source entitlements section is misplaced or duplicated")
+		}
+		source, err = section.Data()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if source == nil {
+		return nil, nil
+	}
+	source = bytes.TrimRight(source, "\x00")
+	values, keys, err := parseBooleanEntitlementPlist(source)
+	if err != nil {
+		return nil, fmt.Errorf("decode source entitlements: %w", err)
+	}
+	der, err := booleanEntitlementsDER(values, keys)
+	if err != nil {
+		return nil, err
+	}
+	return &embeddedPayloadAuthority{
+		XML: source, XMLBlob: entitlementBlob(0xfade7171, source), DERBlob: der,
+		Keys: keys, Values: values,
+	}, nil
+}
+
+func validateSignedPayloadAuthority(input []byte, authority *embeddedPayloadAuthority) error {
+	if authority == nil {
+		return nil
+	}
+	le, be := binary.LittleEndian, binary.BigEndian
+	if len(input) < 32 || le.Uint32(input) != 0xfeedfacf {
+		return errors.New("signed entitlement validation requires a thin little-endian 64-bit Mach-O")
+	}
+	at, signatureOffset, signatureSize := 32, -1, 0
+	for index := 0; index < int(le.Uint32(input[16:])); index++ {
+		if at > len(input)-8 {
+			return errors.New("signed entitlement validation found a truncated load command")
+		}
+		size := int(le.Uint32(input[at+4:]))
+		if size < 8 || at > len(input)-size {
+			return errors.New("signed entitlement validation found an invalid load command")
+		}
+		if le.Uint32(input[at:]) == 0x1d {
+			if signatureOffset >= 0 || size != 16 {
+				return errors.New("signed entitlement validation found duplicate signature commands")
+			}
+			signatureOffset, signatureSize = int(le.Uint32(input[at+8:])), int(le.Uint32(input[at+12:]))
+		}
+		at += size
+	}
+	if signatureOffset <= 0 || signatureSize < 12 || signatureOffset > len(input)-signatureSize {
+		return errors.New("signed entitlement validation found no bounded signature")
+	}
+	signature := input[signatureOffset : signatureOffset+signatureSize]
+	if be.Uint32(signature) != 0xfade0cc0 || int(be.Uint32(signature[4:])) > len(signature) {
+		return errors.New("signed entitlement validation found an invalid SuperBlob")
+	}
+	count := int(be.Uint32(signature[8:]))
+	if count < 1 || count > 1024 || 12+count*8 > len(signature) {
+		return errors.New("signed entitlement validation found an invalid index")
+	}
+	blobs := make(map[uint32][]byte)
+	for index := 0; index < count; index++ {
+		row := signature[12+index*8:]
+		typeID, offset := be.Uint32(row), int(be.Uint32(row[4:]))
+		if offset < 12+count*8 || offset > len(signature)-8 {
+			return errors.New("signed entitlement validation found an invalid blob offset")
+		}
+		length := int(be.Uint32(signature[offset+4:]))
+		if length < 8 || offset > len(signature)-length {
+			return errors.New("signed entitlement validation found an invalid blob length")
+		}
+		if _, duplicate := blobs[typeID]; duplicate {
+			return fmt.Errorf("signed entitlement validation found duplicate slot %d", typeID)
+		}
+		blobs[typeID] = signature[offset : offset+length]
+	}
+	if !bytes.Equal(blobs[codeSignatureEntitlementsSlot], authority.XMLBlob) ||
+		!bytes.Equal(blobs[codeSignatureDEREntitlementsSlot], authority.DERBlob) {
+		return errors.New("signed XML/DER entitlements differ from the source declaration")
+	}
+	directory := blobs[0]
+	if len(directory) < codeDirectoryExecSegBytes || be.Uint32(directory) != 0xfade0c02 ||
+		be.Uint32(directory[24:]) < codeSignatureDEREntitlementsSlot || directory[36] != sha256.Size || directory[37] != 2 {
+		return errors.New("signed entitlement CodeDirectory lacks the required special slots")
+	}
+	hashOffset := int(be.Uint32(directory[16:]))
+	if hashOffset < codeSignatureDEREntitlementsSlot*sha256.Size || hashOffset > len(directory) {
+		return errors.New("signed entitlement CodeDirectory hash geometry is invalid")
+	}
+	for slot, blob := range map[int][]byte{
+		codeSignatureEntitlementsSlot:    authority.XMLBlob,
+		codeSignatureDEREntitlementsSlot: authority.DERBlob,
+	} {
+		hash := sha256.Sum256(blob)
+		start := hashOffset - slot*sha256.Size
+		if !bytes.Equal(directory[start:start+sha256.Size], hash[:]) {
+			return fmt.Errorf("signed entitlement special slot %d is not content-bound", slot)
+		}
+	}
+	return nil
+}
+
 // adHocSignExecutable adds a deterministic SHA-256 CodeDirectory to an
 // unsigned thin executable, dylib, or dynamic linker. The input must reserve
 // one 16-byte load command in its normal header padding, as images produced by
 // the supported toolchain do.
 func adHocSignExecutable(input []byte, identifier string) ([]byte, error) {
+	return adHocSignExecutableWithAuthority(input, identifier, nil)
+}
+
+func adHocSignExecutableWithAuthority(input []byte, identifier string, authority *embeddedPayloadAuthority) ([]byte, error) {
 	if len(input) < 32 || len(input) > payloadLimit || binary.LittleEndian.Uint32(input) != 0xfeedfacf {
 		return nil, errors.New("ad-hoc signing requires a thin little-endian 64-bit Mach-O")
 	}
@@ -417,7 +759,11 @@ func adHocSignExecutable(input []byte, identifier string) ([]byte, error) {
 	}
 	codeLimit := alignValue(len(input), 16)
 	codeSlots := (codeLimit + codeDirectoryPageBytes - 1) / codeDirectoryPageBytes
-	hashOffset := codeDirectoryExecSegBytes + len(identifier) + 1 + codeSignatureRequirementsSlot*sha256.Size
+	specialSlots := codeSignatureRequirementsSlot
+	if authority != nil {
+		specialSlots = codeSignatureDEREntitlementsSlot
+	}
+	hashOffset := codeDirectoryExecSegBytes + len(identifier) + 1 + specialSlots*sha256.Size
 	codeDirectorySize := hashOffset + codeSlots*sha256.Size
 	requirements := make([]byte, 12)
 	be.PutUint32(requirements, 0xfade0c01)
@@ -426,7 +772,13 @@ func adHocSignExecutable(input []byte, identifier string) ([]byte, error) {
 	emptyCMS := make([]byte, 8)
 	be.PutUint32(emptyCMS, 0xfade0b01)
 	be.PutUint32(emptyCMS[4:], uint32(len(emptyCMS)))
-	superBlobSize := 12 + 3*8 + codeDirectorySize + len(requirements) + len(emptyCMS)
+	componentCount := 3
+	authorityBytes := 0
+	if authority != nil {
+		componentCount = 5
+		authorityBytes = len(authority.XMLBlob) + len(authority.DERBlob)
+	}
+	superBlobSize := 12 + componentCount*8 + codeDirectorySize + len(requirements) + authorityBytes + len(emptyCMS)
 	signatureSize := max(codeSignatureMinimumBytes, alignValue(superBlobSize, 16))
 	if codeLimit+signatureSize > payloadLimit {
 		return nil, errors.New("signed executable exceeds 64 MiB payload limit")
@@ -459,7 +811,7 @@ func adHocSignExecutable(input []byte, identifier string) ([]byte, error) {
 	be.PutUint32(codeDirectory[12:], codeDirectoryAdHocFlag|callerLinkerSignedFlag)
 	be.PutUint32(codeDirectory[16:], uint32(hashOffset))
 	be.PutUint32(codeDirectory[20:], codeDirectoryExecSegBytes)
-	be.PutUint32(codeDirectory[24:], codeSignatureRequirementsSlot)
+	be.PutUint32(codeDirectory[24:], uint32(specialSlots))
 	be.PutUint32(codeDirectory[28:], uint32(codeSlots))
 	be.PutUint32(codeDirectory[32:], uint32(codeLimit))
 	codeDirectory[36], codeDirectory[37], codeDirectory[39] = sha256.Size, 2, codeDirectoryPagePower
@@ -469,6 +821,12 @@ func adHocSignExecutable(input []byte, identifier string) ([]byte, error) {
 	copy(codeDirectory[codeDirectoryExecSegBytes:], identifier)
 	requirementsHash := sha256.Sum256(requirements)
 	copy(codeDirectory[hashOffset-codeSignatureRequirementsSlot*sha256.Size:], requirementsHash[:])
+	if authority != nil {
+		xmlHash := sha256.Sum256(authority.XMLBlob)
+		derHash := sha256.Sum256(authority.DERBlob)
+		copy(codeDirectory[hashOffset-codeSignatureEntitlementsSlot*sha256.Size:], xmlHash[:])
+		copy(codeDirectory[hashOffset-codeSignatureDEREntitlementsSlot*sha256.Size:], derHash[:])
+	}
 	for slot := 0; slot < codeSlots; slot++ {
 		hash := sha256.Sum256(executable[slot*codeDirectoryPageBytes : min((slot+1)*codeDirectoryPageBytes, codeLimit)])
 		copy(codeDirectory[hashOffset+slot*sha256.Size:], hash[:])
@@ -476,19 +834,29 @@ func adHocSignExecutable(input []byte, identifier string) ([]byte, error) {
 	super := make([]byte, signatureSize)
 	be.PutUint32(super, 0xfade0cc0)
 	be.PutUint32(super[4:], uint32(superBlobSize))
-	be.PutUint32(super[8:], 3)
-	codeDirectoryOffset := 12 + 3*8
-	requirementsOffset := codeDirectoryOffset + codeDirectorySize
-	cmsOffset := requirementsOffset + len(requirements)
-	be.PutUint32(super[12:], 0)
-	be.PutUint32(super[16:], uint32(codeDirectoryOffset))
-	be.PutUint32(super[20:], codeSignatureRequirementsSlot)
-	be.PutUint32(super[24:], uint32(requirementsOffset))
-	be.PutUint32(super[28:], codeSignatureCMSSlot)
-	be.PutUint32(super[32:], uint32(cmsOffset))
-	copy(super[codeDirectoryOffset:], codeDirectory)
-	copy(super[requirementsOffset:], requirements)
-	copy(super[cmsOffset:], emptyCMS)
+	be.PutUint32(super[8:], uint32(componentCount))
+	type signatureComponent struct {
+		typeID uint32
+		body   []byte
+	}
+	components := []signatureComponent{{0, codeDirectory}, {codeSignatureRequirementsSlot, requirements}}
+	if authority != nil {
+		components = append(components,
+			signatureComponent{codeSignatureEntitlementsSlot, authority.XMLBlob},
+			signatureComponent{codeSignatureDEREntitlementsSlot, authority.DERBlob})
+	}
+	components = append(components, signatureComponent{codeSignatureCMSSlot, emptyCMS})
+	offset := 12 + componentCount*8
+	for index, component := range components {
+		row := 12 + index*8
+		be.PutUint32(super[row:], component.typeID)
+		be.PutUint32(super[row+4:], uint32(offset))
+		copy(super[offset:], component.body)
+		offset += len(component.body)
+	}
+	if offset != superBlobSize {
+		return nil, errors.New("deterministic signature component geometry is inconsistent")
+	}
 	return append(executable, super...), nil
 }
 
@@ -603,13 +971,17 @@ func gcOwnedPayloadObjects(c *cache, entries []payloadEntry, owned []string) err
 }
 
 type preparedPayload struct {
-	Entry        payloadEntry
-	Body         []byte
-	Dependencies []string
-	FileType     macho.Type
-	Signed       bool
-	LCUUIDAdded  bool
-	LinkerSigned bool
+	Entry                  payloadEntry
+	Body                   []byte
+	Dependencies           []string
+	EntitlementKeys        []string
+	XMLEntitlementsSHA256  string
+	DEREntitlementsSHA256  string
+	DEREntitlementsPresent bool
+	FileType               macho.Type
+	Signed                 bool
+	LCUUIDAdded            bool
+	LinkerSigned           bool
 }
 
 func validateRuntimeCallerCodeDirectory(input, codeDirectory []byte) error {
@@ -851,6 +1223,10 @@ func preparePayload(source, destination string) (preparedPayload, error) {
 	if err != nil {
 		return result, err
 	}
+	authority, err := extractEmbeddedPayloadAuthority(b)
+	if err != nil {
+		return result, err
+	}
 	f, err := macho.NewFile(bytes.NewReader(b))
 	if err != nil {
 		return result, fmt.Errorf("inspect Mach-O: %w", err)
@@ -860,7 +1236,7 @@ func preparePayload(source, destination string) (preparedPayload, error) {
 	_ = f.Close()
 	cdhash, inspectErr := inspectExecutable(b)
 	if inspectErr != nil && strings.Contains(inspectErr.Error(), "needs ad-hoc signing") {
-		b, err = adHocSignExecutable(b, filepath.Base(destination))
+		b, err = adHocSignExecutableWithAuthority(b, filepath.Base(destination), authority)
 		if err != nil {
 			return result, fmt.Errorf("ad-hoc sign compatible Mach-O: %w", err)
 		}
@@ -877,6 +1253,15 @@ func preparePayload(source, destination string) (preparedPayload, error) {
 	cdhash, err = inspectExecutable(b)
 	if err != nil {
 		return result, err
+	}
+	if err = validateSignedPayloadAuthority(b, authority); err != nil {
+		return result, err
+	}
+	if authority != nil {
+		result.EntitlementKeys = append([]string(nil), authority.Keys...)
+		result.XMLEntitlementsSHA256 = digest(authority.XMLBlob)
+		result.DEREntitlementsSHA256 = digest(authority.DERBlob)
+		result.DEREntitlementsPresent = true
 	}
 	result.LinkerSigned = true
 	result.Body = b

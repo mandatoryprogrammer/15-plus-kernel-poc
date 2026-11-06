@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"debug/macho"
 	"encoding/binary"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -324,6 +326,47 @@ func unsignedRuntimeMachOFixtureSize(fileType macho.Type, textFileSize int) []by
 	return b
 }
 
+func unsignedRuntimeMachOEntitlementsFixture(entitlements []byte) []byte {
+	const textFileSize = 0x4000
+	const linkeditSize = 0x20
+	const entitlementOffset = 0x400
+	b := make([]byte, textFileSize+linkeditSize)
+	le := binary.LittleEndian
+	for index, value := range []uint32{
+		0xfeedfacf, 0x100000c, 0, uint32(macho.TypeExec), 3, 248, 0, 0,
+	} {
+		le.PutUint32(b[index*4:], value)
+	}
+	putSegment := func(at, size int, name string, vmaddr, vmSize, fileOffset, fileSize uint64, protections, sections uint32) {
+		le.PutUint32(b[at:], 0x19)
+		le.PutUint32(b[at+4:], uint32(size))
+		copy(b[at+8:at+24], name)
+		le.PutUint64(b[at+24:], vmaddr)
+		le.PutUint64(b[at+32:], vmSize)
+		le.PutUint64(b[at+40:], fileOffset)
+		le.PutUint64(b[at+48:], fileSize)
+		le.PutUint32(b[at+56:], protections)
+		le.PutUint32(b[at+60:], protections)
+		le.PutUint32(b[at+64:], sections)
+	}
+	putSegment(32, 152, "__TEXT", 0x100000000, textFileSize, 0, textFileSize, 5, 1)
+	section := 104
+	copy(b[section:section+16], "__entitlements")
+	copy(b[section+16:section+32], "__TEXT")
+	le.PutUint64(b[section+32:], 0x100000000+entitlementOffset)
+	le.PutUint64(b[section+40:], uint64(len(entitlements)+1))
+	le.PutUint32(b[section+48:], entitlementOffset)
+	putSegment(184, 72, "__LINKEDIT", 0x100000000+textFileSize, 0x4000, textFileSize, linkeditSize, 1, 0)
+	le.PutUint32(b[256:], 0x32)
+	le.PutUint32(b[260:], 24)
+	le.PutUint32(b[264:], 2)
+	le.PutUint32(b[268:], 0x1a0000)
+	le.PutUint32(b[272:], 0x1a0000)
+	copy(b[entitlementOffset:], entitlements)
+	copy(b[textFileSize:], []byte("deterministic-linkedit-fixture"))
+	return b
+}
+
 func runtimeSignatureForTest(t *testing.T, body []byte) ([]byte, []byte) {
 	t.Helper()
 	le, be := binary.LittleEndian, binary.BigEndian
@@ -346,6 +389,84 @@ func runtimeSignatureForTest(t *testing.T, body []byte) ([]byte, []byte) {
 	}
 	t.Fatal("runtime signature lacks a primary CodeDirectory")
 	return nil, nil
+}
+
+func TestSourceDeclaredBooleanEntitlementsAreDeterministicallySigned(t *testing.T) {
+	xml := []byte(`<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>com.apple.private.xpc.launchd.job-manager</key><true/><key>z.false-control</key><false/></dict></plist>`)
+	fixture := unsignedRuntimeMachOEntitlementsFixture(xml)
+	authority, err := extractEmbeddedPayloadAuthority(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authority == nil || !bytes.Equal(authority.XML, xml) ||
+		len(authority.Keys) != 2 || authority.Keys[0] != "com.apple.private.xpc.launchd.job-manager" ||
+		authority.Keys[1] != "z.false-control" || !authority.Values[authority.Keys[0]] || authority.Values[authority.Keys[1]] {
+		t.Fatalf("source authority changed: %+v", authority)
+	}
+	if len(authority.XMLBlob) < 8 || binary.BigEndian.Uint32(authority.XMLBlob) != 0xfade7171 ||
+		len(authority.DERBlob) < 8 || binary.BigEndian.Uint32(authority.DERBlob) != 0xfade7172 ||
+		!bytes.Contains(authority.DERBlob, []byte{0x01, 0x01, 0xff}) ||
+		!bytes.Contains(authority.DERBlob, []byte{0x01, 0x01, 0x00}) {
+		t.Fatalf("source XML/DER blobs changed: xml=%x der=%x", authority.XMLBlob, authority.DERBlob)
+	}
+	signed, err := adHocSignExecutableWithAuthority(fixture, "entitled-probe", authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = validateSignedPayloadAuthority(signed, authority); err != nil {
+		t.Fatal(err)
+	}
+	if hash, inspectErr := inspectExecutable(signed); inspectErr != nil || len(hash) != 40 {
+		t.Fatalf("entitled signature rejected: hash=%q err=%v", hash, inspectErr)
+	}
+	signature, directory := runtimeSignatureForTest(t, signed)
+	if binary.BigEndian.Uint32(signature[8:]) != 5 || binary.BigEndian.Uint32(directory[24:]) != 7 {
+		t.Fatalf("entitlement signature geometry changed: components=%d special=%d",
+			binary.BigEndian.Uint32(signature[8:]), binary.BigEndian.Uint32(directory[24:]))
+	}
+	mutated := bytes.Clone(signed)
+	mutatedSignature, _ := runtimeSignatureForTest(t, mutated)
+	for index := 0; index < int(binary.BigEndian.Uint32(mutatedSignature[8:])); index++ {
+		row := mutatedSignature[12+index*8:]
+		if binary.BigEndian.Uint32(row) == codeSignatureEntitlementsSlot {
+			offset := int(binary.BigEndian.Uint32(row[4:]))
+			mutatedSignature[offset+8] ^= 1
+		}
+	}
+	if err = validateSignedPayloadAuthority(mutated, authority); err == nil || !strings.Contains(err.Error(), "differ") {
+		t.Fatalf("mutated signed XML was accepted: %v", err)
+	}
+
+	source := filepath.Join(t.TempDir(), "entitled-probe")
+	if err = os.WriteFile(source, fixture, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := preparePayload(source, "/usr/local/bin/entitled-probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := preparePayload(source, "/usr/local/bin/entitled-probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first.Body, second.Body) || !first.Signed || !first.LinkerSigned ||
+		!first.DEREntitlementsPresent || len(first.EntitlementKeys) != 2 ||
+		len(first.XMLEntitlementsSHA256) != 64 || len(first.DEREntitlementsSHA256) != 64 {
+		t.Fatalf("prepared entitlement identity is incomplete: %+v", first)
+	}
+}
+
+func TestSourceDeclaredEntitlementsRejectNonBooleanOrDuplicateValues(t *testing.T) {
+	for name, value := range map[string][]byte{
+		"non-boolean": []byte(`<plist version="1.0"><dict><key>authority</key><string>true</string></dict></plist>`),
+		"duplicate":   []byte(`<plist version="1.0"><dict><key>authority</key><true/><key>authority</key><true/></dict></plist>`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := extractEmbeddedPayloadAuthority(unsignedRuntimeMachOEntitlementsFixture(value)); err == nil {
+				t.Fatal("malformed source entitlements were accepted")
+			}
+		})
+	}
 }
 
 func TestNativeAdHocSigning(t *testing.T) {

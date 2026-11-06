@@ -29,15 +29,19 @@ var (
 )
 
 type probeNormalizedIdentity struct {
-	Object       string   `json:"object"`
-	Target       string   `json:"target"`
-	SHA256       string   `json:"sha256"`
-	CDHash       string   `json:"cdhash"`
-	Size         int64    `json:"size"`
-	LCUUIDAdded  bool     `json:"lc_uuid_added"`
-	LinkerSigned bool     `json:"linker_signed"`
-	AdHocSigned  bool     `json:"ad_hoc_signed"`
-	Dependencies []string `json:"dependencies,omitempty"`
+	Object                 string   `json:"object"`
+	Target                 string   `json:"target"`
+	SHA256                 string   `json:"sha256"`
+	CDHash                 string   `json:"cdhash"`
+	Size                   int64    `json:"size"`
+	LCUUIDAdded            bool     `json:"lc_uuid_added"`
+	LinkerSigned           bool     `json:"linker_signed"`
+	AdHocSigned            bool     `json:"ad_hoc_signed"`
+	Dependencies           []string `json:"dependencies,omitempty"`
+	EntitlementKeys        []string `json:"entitlement_keys,omitempty"`
+	XMLEntitlementsSHA256  string   `json:"xml_entitlements_sha256,omitempty"`
+	DEREntitlementsPresent bool     `json:"der_entitlements_present,omitempty"`
+	DEREntitlementsSHA256  string   `json:"der_entitlements_sha256,omitempty"`
 }
 
 type probeNormalizeReport struct {
@@ -150,7 +154,11 @@ func probeNormalized(prepared preparedPayload, object string) probeNormalizedIde
 		Object: object, Target: prepared.Entry.Destination, SHA256: prepared.Entry.SHA256,
 		CDHash: prepared.Entry.CDHash, Size: prepared.Entry.Size, LCUUIDAdded: prepared.LCUUIDAdded,
 		LinkerSigned: prepared.LinkerSigned, AdHocSigned: prepared.Signed,
-		Dependencies: append([]string(nil), prepared.Dependencies...),
+		Dependencies:           append([]string(nil), prepared.Dependencies...),
+		EntitlementKeys:        append([]string(nil), prepared.EntitlementKeys...),
+		XMLEntitlementsSHA256:  prepared.XMLEntitlementsSHA256,
+		DEREntitlementsPresent: prepared.DEREntitlementsPresent,
+		DEREntitlementsSHA256:  prepared.DEREntitlementsSHA256,
 	}
 }
 
