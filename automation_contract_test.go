@@ -242,9 +242,13 @@ func TestTargetControlModuleUsesLiveTaskDyldABIAndPinned64BitLayout(t *testing.T
 		"#define POC_DYLD_SHARED_CACHE_SLIDE_OFFSET 152",
 		"#define POC_DYLD_SHARED_CACHE_UUID_OFFSET 160",
 		"#define POC_DYLD_SHARED_CACHE_BASE_OFFSET 176",
+		"#define POC_SHARED_CACHE_SLIDE_ALIGNMENT 0x4000ULL",
+		"#define POC_SHARED_CACHE_MAX_SLIDE 0x20000000ULL",
 		"snapshot->count != POC_TASK_DYLD_INFO_COUNT",
 		"snapshot->read_status=-1",
 		"poc_remote_read_exact(task,snapshot->info.address",
+		"out->cache_slide > POC_SHARED_CACHE_MAX_SLIDE",
+		"out->cache_slide & (POC_SHARED_CACHE_SLIDE_ALIGNMENT-1)",
 		"__asm__ volatile(\"xpaci %0\"",
 	} {
 		if !bytes.Contains(source, []byte(required)) {

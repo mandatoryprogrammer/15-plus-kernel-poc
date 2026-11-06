@@ -100,6 +100,8 @@ extern poc_kr mach_msg(void *, int, poc_u32, poc_u32, poc_port, poc_u32, poc_por
 #define POC_DYLD_SHARED_CACHE_SLIDE_OFFSET 152
 #define POC_DYLD_SHARED_CACHE_UUID_OFFSET 160
 #define POC_DYLD_SHARED_CACHE_BASE_OFFSET 176
+#define POC_SHARED_CACHE_SLIDE_ALIGNMENT 0x4000ULL
+#define POC_SHARED_CACHE_MAX_SLIDE 0x20000000ULL
 #define POC_ARM_DEBUG_STATE64 15
 #define POC_ARM_DEBUG_STATE64_COUNT 130
 #define POC_EXCEPTION_DEFAULT 1
@@ -178,9 +180,11 @@ static int poc_target_dyld_snapshot_read(poc_port task, struct poc_target_dyld_s
     for (unsigned i=0; i != 16; ++i) out->cache_uuid[i] = snapshot.bytes[POC_DYLD_SHARED_CACHE_UUID_OFFSET+i];
     out->cache_base = poc_load_u64(snapshot.bytes+POC_DYLD_SHARED_CACHE_BASE_OFFSET);
     if (!poc_equal16(out->cache_uuid, poc_expected_cache_uuid) || out->cache_base == 0) return -3;
-    if (out->cache_base != POC_STATIC_CACHE_BASE + out->cache_slide) return -4;
+    if (out->cache_slide > POC_SHARED_CACHE_MAX_SLIDE ||
+        (out->cache_slide & (POC_SHARED_CACHE_SLIDE_ALIGNMENT-1)) != 0) return -4;
+    if (out->cache_base != POC_STATIC_CACHE_BASE + out->cache_slide) return -5;
     out->image_base = out->cache_base + (POC_STATIC_IMAGE_BASE - POC_STATIC_CACHE_BASE);
-    return out->notifier ? 0 : -5;
+    return out->notifier ? 0 : -6;
 }
 static poc_u64 poc_static_to_runtime(const struct poc_target_image *image, poc_u64 static_address) {
     return image->cache_base + (static_address - POC_STATIC_CACHE_BASE);
