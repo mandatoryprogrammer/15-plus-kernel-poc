@@ -65,23 +65,27 @@ func TestServiceChainManifestAndLauncherArguments(t *testing.T) {
 }
 
 func TestParseServiceChainRunArgumentsOwnsNativeStaging(t *testing.T) {
-	manifest, native, program, err := parseServiceChainRunArguments([]string{
+	manifest, native, cryptex, program, err := parseServiceChainRunArguments([]string{
 		"default", "--preserve-native", "/host/Product-hidd=/usr/local/libexec/productos-hidd.nonui",
+		"--systemos-cryptex", "/host/LuckD23D127.D38SystemCryptex.ulfo.dmg",
 		"--", "--hidd-bootstrap-boundary-v5",
 	})
 	if err != nil || manifest != "default" || native == nil ||
 		*native != [2]string{"/host/Product-hidd", "/usr/local/libexec/productos-hidd.nonui"} ||
+		cryptex != "/host/LuckD23D127.D38SystemCryptex.ulfo.dmg" ||
 		!reflect.DeepEqual(program, []string{"--hidd-bootstrap-boundary-v5"}) {
-		t.Fatalf("parsed service-chain run changed: manifest=%q native=%v program=%q err=%v", manifest, native, program, err)
+		t.Fatalf("parsed service-chain run changed: manifest=%q native=%v cryptex=%q program=%q err=%v", manifest, native, cryptex, program, err)
 	}
 	for _, args := range [][]string{
 		{},
 		{"default", "--preserve-native"},
 		{"default", "--preserve-native", "bad"},
 		{"default", "--preserve-native", "one=/usr/local/libexec/one", "--preserve-native", "two=/usr/local/libexec/two"},
+		{"default", "--systemos-cryptex"},
+		{"default", "--systemos-cryptex", "one", "--systemos-cryptex", "two"},
 		{"default", "target-argument-before-delimiter"},
 	} {
-		if _, _, _, err = parseServiceChainRunArguments(args); err == nil {
+		if _, _, _, _, err = parseServiceChainRunArguments(args); err == nil {
 			t.Fatalf("invalid service-chain run arguments accepted: %q", args)
 		}
 	}

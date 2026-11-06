@@ -374,7 +374,7 @@ func verifyPayloadReadback(ctx context.Context, c *cache, access sshAccess, entr
 }
 
 func runPreparedPayload(ctx context.Context, c *cache, main payloadEntry, includes []payloadEntry, environment, args []string) (progress payloadExecutionProgress, runErr error) {
-	runErr = withDeviceLock(c, func() error {
+	runErr = withDeviceLock(c, func() (lockedErr error) {
 		access, err := loadAccess(ctx, c)
 		if err != nil {
 			return err
@@ -418,6 +418,18 @@ func runPreparedPayload(ctx context.Context, c *cache, main payloadEntry, includ
 			return err
 		}
 		progress.ExactReadback = true
+		if cryptex := systemOSCryptexFromContext(ctx); cryptex != nil {
+			cleanup, mountErr := stageAndMountSystemOSCryptex(ctx, c, access, cryptex)
+			if mountErr != nil {
+				return mountErr
+			}
+			defer func() {
+				if cleanupErr := cleanup(); cleanupErr != nil {
+					lockedErr = errors.Join(lockedErr,
+						fmt.Errorf("clean up SystemOS cryptex mount: %w", cleanupErr))
+				}
+			}()
+		}
 		checkCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		err = runSSH(checkCtx, access, false, []string{"/bin/bash", "-c", "test -x " + shellQuote(runtimeMain.Destination)}, nil, io.Discard, os.Stderr)
 		cancel()

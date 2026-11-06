@@ -42,35 +42,36 @@ type serviceChainManifest struct {
 }
 
 type serviceChainReport struct {
-	Schema                        string    `json:"schema"`
-	StartedAt                     string    `json:"started_at"`
-	FinishedAt                    string    `json:"finished_at"`
-	Manifest                      string    `json:"manifest"`
-	ManifestSHA256                string    `json:"manifest_sha256"`
-	Name                          string    `json:"name"`
-	Services                      []string  `json:"services"`
-	LauncherMode                  string    `json:"launcher_mode"`
-	Arguments                     []string  `json:"arguments"`
-	Program                       uiProgram `json:"program"`
-	PreservedNativeExecutable     string    `json:"preserved_native_executable,omitempty"`
-	ChainReady                    bool      `json:"chain_ready"`
-	ProgramReached                bool      `json:"program_reached"`
-	ExecutionTimeout              string    `json:"execution_timeout"`
-	ExecutionTimedOut             bool      `json:"execution_timed_out"`
-	ExecutionKilled               bool      `json:"execution_killed"`
-	ExecutionSerialLog            string    `json:"execution_serial_log,omitempty"`
-	ExecutionSerialBytes          int64     `json:"execution_serial_bytes,omitempty"`
-	ExecutionSerialSHA256         string    `json:"execution_serial_sha256,omitempty"`
-	ExecutionSerialDrainQuiet     string    `json:"execution_serial_drain_quiet,omitempty"`
-	ExecutionSerialDrainLimit     string    `json:"execution_serial_drain_limit,omitempty"`
-	ExecutionSerialDrainElapsed   string    `json:"execution_serial_drain_elapsed,omitempty"`
-	ExecutionSerialDrainQuiescent bool      `json:"execution_serial_drain_quiescent,omitempty"`
-	ExecutionTerminal             string    `json:"execution_terminal,omitempty"`
-	RecoveryCleanup               string    `json:"recovery_cleanup,omitempty"`
-	Markers                       []string  `json:"markers,omitempty"`
-	OutputTruncated               bool      `json:"output_truncated,omitempty"`
-	Exit                          string    `json:"exit"`
-	Error                         string    `json:"error,omitempty"`
+	Schema                        string                   `json:"schema"`
+	StartedAt                     string                   `json:"started_at"`
+	FinishedAt                    string                   `json:"finished_at"`
+	Manifest                      string                   `json:"manifest"`
+	ManifestSHA256                string                   `json:"manifest_sha256"`
+	Name                          string                   `json:"name"`
+	Services                      []string                 `json:"services"`
+	LauncherMode                  string                   `json:"launcher_mode"`
+	Arguments                     []string                 `json:"arguments"`
+	Program                       uiProgram                `json:"program"`
+	PreservedNativeExecutable     string                   `json:"preserved_native_executable,omitempty"`
+	SystemOSCryptex               *systemOSCryptexEvidence `json:"systemos_cryptex,omitempty"`
+	ChainReady                    bool                     `json:"chain_ready"`
+	ProgramReached                bool                     `json:"program_reached"`
+	ExecutionTimeout              string                   `json:"execution_timeout"`
+	ExecutionTimedOut             bool                     `json:"execution_timed_out"`
+	ExecutionKilled               bool                     `json:"execution_killed"`
+	ExecutionSerialLog            string                   `json:"execution_serial_log,omitempty"`
+	ExecutionSerialBytes          int64                    `json:"execution_serial_bytes,omitempty"`
+	ExecutionSerialSHA256         string                   `json:"execution_serial_sha256,omitempty"`
+	ExecutionSerialDrainQuiet     string                   `json:"execution_serial_drain_quiet,omitempty"`
+	ExecutionSerialDrainLimit     string                   `json:"execution_serial_drain_limit,omitempty"`
+	ExecutionSerialDrainElapsed   string                   `json:"execution_serial_drain_elapsed,omitempty"`
+	ExecutionSerialDrainQuiescent bool                     `json:"execution_serial_drain_quiescent,omitempty"`
+	ExecutionTerminal             string                   `json:"execution_terminal,omitempty"`
+	RecoveryCleanup               string                   `json:"recovery_cleanup,omitempty"`
+	Markers                       []string                 `json:"markers,omitempty"`
+	OutputTruncated               bool                     `json:"output_truncated,omitempty"`
+	Exit                          string                   `json:"exit"`
+	Error                         string                   `json:"error,omitempty"`
 }
 
 type machServiceReport struct {
@@ -319,7 +320,8 @@ func newServiceChainReport(manifestPath, manifestHash string,
 }
 
 func runServiceChain(ctx context.Context, c *cache, manifestPath string,
-	nativeExecutable *[2]string, programArguments []string) (runErr error) {
+	nativeExecutable *[2]string, systemOSCryptexPath string,
+	programArguments []string) (runErr error) {
 	manifest, manifestHash, err := loadServiceChainManifest(manifestPath)
 	if err != nil {
 		return err
@@ -345,6 +347,21 @@ func runServiceChain(ctx context.Context, c *cache, manifestPath string,
 	}
 	report := newServiceChainReport(manifestPath, manifestHash, manifest,
 		programArguments, *profile.Program, executionTimeout, nativeExecutable)
+	var cryptexRuntime *systemOSCryptexRuntime
+	if systemOSCryptexPath != "" {
+		plan, prepareErr := prepareSystemOSCryptex(systemOSCryptexPath, c.out)
+		if prepareErr != nil {
+			return prepareErr
+		}
+		evidence := &systemOSCryptexEvidence{
+			Source: plan.Source, Bytes: plan.Bytes, SHA256: plan.SHA256,
+			TargetImage:        systemOSCryptexTargetImage,
+			ProductMountpoint:  systemOSCryptexProductMount,
+			ProductVisibleRoot: systemOSCryptexVisibleRoot,
+		}
+		cryptexRuntime = &systemOSCryptexRuntime{Plan: plan, Evidence: evidence}
+		report.SystemOSCryptex = evidence
+	}
 	if err = writePrivateJSON(c, "service-chain-run", report); err != nil {
 		return fmt.Errorf("write initial service-chain report: %w", err)
 	}
@@ -377,6 +394,9 @@ func runServiceChain(ctx context.Context, c *cache, manifestPath string,
 	serialEvidence := &payloadExecutionSerialEvidence{}
 	executionContext := serviceChainExecutionContext(ctx, executionTimeout,
 		serialEvidence)
+	if cryptexRuntime != nil {
+		executionContext = withSystemOSCryptex(executionContext, cryptexRuntime)
+	}
 	runErr = runPayload(executionContext, c, runArguments)
 	recordServiceChainExecutionSerial(&report, serialEvidence)
 	c.targetOut = originalOutput
@@ -421,22 +441,24 @@ func serviceChainCommand(ctx context.Context, c *cache, args []string) error {
 		return nil
 	}
 	if len(args) >= 2 && args[0] == "run" {
-		manifestPath, nativeExecutable, programArguments, err := parseServiceChainRunArguments(args[1:])
+		manifestPath, nativeExecutable, systemOSCryptexPath, programArguments, err := parseServiceChainRunArguments(args[1:])
 		if err != nil {
 			return err
 		}
 		if manifestPath == "default" {
 			manifestPath = filepath.Join(filepath.Dir(c.root), "examples", "productos-display-chain.json")
 		}
-		return runServiceChain(ctx, c, manifestPath, nativeExecutable, programArguments)
+		return runServiceChain(ctx, c, manifestPath, nativeExecutable,
+			systemOSCryptexPath, programArguments)
 	}
-	return errors.New("usage: service-chain validate MANIFEST | service-chain run MANIFEST|default [--preserve-native FILE=DEST] [-- PROGRAM-ARG...]")
+	return errors.New("usage: service-chain validate MANIFEST | service-chain run MANIFEST|default [--preserve-native FILE=DEST] [--systemos-cryptex IMAGE] [-- PROGRAM-ARG...]")
 }
 
 func parseServiceChainRunArguments(args []string) (manifestPath string,
-	nativeExecutable *[2]string, programArguments []string, err error) {
+	nativeExecutable *[2]string, systemOSCryptexPath string,
+	programArguments []string, err error) {
 	if len(args) == 0 {
-		err = errors.New("usage: service-chain run MANIFEST|default [--preserve-native FILE=DEST] [-- PROGRAM-ARG...]")
+		err = errors.New("usage: service-chain run MANIFEST|default [--preserve-native FILE=DEST] [--systemos-cryptex IMAGE] [-- PROGRAM-ARG...]")
 		return
 	}
 	manifestPath = args[0]
@@ -457,6 +479,17 @@ func parseServiceChainRunArguments(args []string) (manifestPath string,
 				return
 			}
 			nativeExecutable = &[2]string{source, destination}
+		case "--systemos-cryptex":
+			if systemOSCryptexPath != "" || index+1 >= len(args) {
+				err = errors.New("service-chain run accepts exactly one --systemos-cryptex IMAGE")
+				return
+			}
+			index++
+			if args[index] == "" {
+				err = errors.New("--systemos-cryptex needs a nonempty path")
+				return
+			}
+			systemOSCryptexPath = args[index]
 		default:
 			err = fmt.Errorf("unknown service-chain run option %q; put target arguments after --", args[index])
 			return
