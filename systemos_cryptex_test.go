@@ -140,6 +140,51 @@ func TestSystemOSCryptexPrebootReadOnlyPlan(t *testing.T) {
 	}
 }
 
+func validateSystemOSCryptexInverseQualificationSource(source []byte) string {
+	for _, assertion := range []struct {
+		site  string
+		token string
+	}{
+		{"qualifier sequence", "if err := session.remountPreboot(false); err != nil {\n\t\treturn err\n\t}\n\tif err := session.remountPreboot(true); err != nil {\n\t\treturn err\n\t}\n\tsession.runtime.Evidence.PrebootInverseQualified = true"},
+		{"staged-image inverse", "session.runtime.Evidence.CompleteStageRetained = true\n\tif err = session.remountPreboot(true); err != nil {\n\t\treturn err\n\t}\n\tsession.runtime.Evidence.PrebootInverseQualified = true"},
+		{"reused-image inverse", "runtime.Evidence.CompleteStageRetained = true\n\t\tif err = session.qualifyPrebootReadOnlyInverse(); err != nil {\n\t\t\treturn nil, err\n\t\t}"},
+		{"inverse before attach", "\t}\n\tif err = session.attachAndMount(); err != nil {"},
+	} {
+		if !strings.Contains(string(source), assertion.token) {
+			return assertion.site
+		}
+	}
+	return ""
+}
+
+func TestSystemOSCryptexInverseQualificationSourceContract(t *testing.T) {
+	source, err := os.ReadFile("systemos_cryptex.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if site := validateSystemOSCryptexInverseQualificationSource(source); site != "" {
+		t.Fatalf("canonical inverse qualification failed at %s", site)
+	}
+	for _, mutation := range []struct {
+		name, old, replacement, want string
+	}{
+		{"qualifier writable transition", "if err := session.remountPreboot(false); err != nil {", "if err := session.remountPreboot(true); err != nil {", "qualifier sequence"},
+		{"staged result", "session.runtime.Evidence.CompleteStageRetained = true\n\tif err = session.remountPreboot(true); err != nil {\n\t\treturn err\n\t}\n\tsession.runtime.Evidence.PrebootInverseQualified = true", "session.runtime.Evidence.CompleteStageRetained = true\n\tif err = session.remountPreboot(true); err != nil {\n\t\treturn err\n\t}\n\tsession.runtime.Evidence.PrebootInverseQualified = false", "staged-image inverse"},
+		{"reuse call", "if err = session.qualifyPrebootReadOnlyInverse(); err != nil {", "if err = session.remountPreboot(true); err != nil {", "reused-image inverse"},
+		{"attach order", "\t}\n\tif err = session.attachAndMount(); err != nil {", "\t}\n\tif err = session.cleanup(); err != nil {", "inverse before attach"},
+	} {
+		t.Run(mutation.name, func(t *testing.T) {
+			mutated := bytesReplace(source, mutation.old, mutation.replacement)
+			if string(mutated) == string(source) {
+				t.Fatalf("mutation did not change source at %q", mutation.old)
+			}
+			if site := validateSystemOSCryptexInverseQualificationSource(mutated); site != mutation.want {
+				t.Fatalf("mutation reached site %q, want %q", site, mutation.want)
+			}
+		})
+	}
+}
+
 func TestSystemOSCryptexPreflightBindsProductResolutionAndOwnedStage(t *testing.T) {
 	for _, stage := range []string{"absent", "incomplete", "complete"} {
 		preflight, err := parseSystemOSPreflight(systemOSPreflightFixture(stage))

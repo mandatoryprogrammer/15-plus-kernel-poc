@@ -62,6 +62,7 @@ type systemOSCryptexEvidence struct {
 	PreflightPassed         bool     `json:"preflight_passed"`
 	PrebootMountSource      string   `json:"preboot_mount_source,omitempty"`
 	PrebootPreimageReadOnly bool     `json:"preboot_preimage_read_only"`
+	PrebootInverseQualified bool     `json:"preboot_inverse_qualified"`
 	AvailableBytes          uint64   `json:"available_bytes,omitempty"`
 	StagePreimage           string   `json:"stage_preimage,omitempty"`
 	StageReused             bool     `json:"stage_reused"`
@@ -746,6 +747,17 @@ func (session *systemOSCryptexSession) remountPreboot(readOnly bool) error {
 	return nil
 }
 
+func (session *systemOSCryptexSession) qualifyPrebootReadOnlyInverse() error {
+	if err := session.remountPreboot(false); err != nil {
+		return err
+	}
+	if err := session.remountPreboot(true); err != nil {
+		return err
+	}
+	session.runtime.Evidence.PrebootInverseQualified = true
+	return nil
+}
+
 func systemOSIncompleteCleanupScript() string {
 	return "set -eu; if test -d " + shellQuote(systemOSCryptexOwnedDirectory) +
 		" && test -f " + shellQuote(systemOSCryptexOwnerPath) +
@@ -808,7 +820,11 @@ func (session *systemOSCryptexSession) createAndStreamStage() error {
 	session.stagingMayExist = false
 	session.runtime.Evidence.TargetImageVerified = true
 	session.runtime.Evidence.CompleteStageRetained = true
-	return session.remountPreboot(true)
+	if err = session.remountPreboot(true); err != nil {
+		return err
+	}
+	session.runtime.Evidence.PrebootInverseQualified = true
+	return nil
 }
 
 func (session *systemOSCryptexSession) attachAndMount() error {
@@ -1063,6 +1079,9 @@ func stageAndMountSystemOSCryptex(ctx context.Context, c *cache, access sshAcces
 		runtime.Evidence.StageReused = true
 		runtime.Evidence.TargetImageVerified = true
 		runtime.Evidence.CompleteStageRetained = true
+		if err = session.qualifyPrebootReadOnlyInverse(); err != nil {
+			return nil, err
+		}
 	}
 	if err = session.attachAndMount(); err != nil {
 		return nil, err
