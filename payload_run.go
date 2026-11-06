@@ -24,6 +24,13 @@ var errPayloadExecutionTimeout = errors.New("target payload execution deadline e
 var errPayloadExecutionKilled = errors.New("target payload terminated by remote KILL")
 
 type payloadExecutionTimeoutKey struct{}
+type payloadExecutionSerialCaptureKey struct{}
+
+type payloadExecutionSerialEvidence struct {
+	Path   string
+	Bytes  int64
+	SHA256 string
+}
 
 // withPayloadExecutionTimeout records a deadline for only the final target
 // process. Boot, admission, transfer, and exact readback remain governed by
@@ -38,6 +45,29 @@ func payloadExecutionTimeout(ctx context.Context) time.Duration {
 		return 0
 	}
 	return timeout
+}
+
+func withPayloadExecutionSerialCapture(ctx context.Context, evidence *payloadExecutionSerialEvidence) context.Context {
+	return context.WithValue(ctx, payloadExecutionSerialCaptureKey{}, evidence)
+}
+
+func payloadExecutionSerialCapture(ctx context.Context) *payloadExecutionSerialEvidence {
+	evidence, _ := ctx.Value(payloadExecutionSerialCaptureKey{}).(*payloadExecutionSerialEvidence)
+	return evidence
+}
+
+func bindPayloadExecutionSerialEvidence(evidence *payloadExecutionSerialEvidence, path string) error {
+	if evidence == nil {
+		return nil
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	evidence.Path = path
+	evidence.Bytes = int64(len(body))
+	evidence.SHA256 = digest(body)
+	return nil
 }
 
 func payloadExecutionDeadlineReached(ctx context.Context, executionErr error, elapsed, timeout time.Duration) bool {
@@ -331,6 +361,19 @@ func runPreparedPayload(ctx context.Context, c *cache, main payloadEntry, includ
 		if targetError == nil {
 			targetError = os.Stderr
 		}
+		var executionSerial *serialCapture
+		serialEvidence := payloadExecutionSerialCapture(ctx)
+		if serialEvidence != nil {
+			probe, serialErr := findProbeSerial(ctx)
+			if serialErr != nil {
+				return fmt.Errorf("select execution UART: %w", serialErr)
+			}
+			executionSerial, serialErr = startSerial(c, probe)
+			if serialErr != nil {
+				return fmt.Errorf("start execution UART capture: %w", serialErr)
+			}
+			fmt.Fprintf(c.out, "Capturing target UART for the bounded payload execution: %s\n", executionSerial.log.Name())
+		}
 		executionCtx := ctx
 		executionCancel := func() {}
 		if timeout := payloadExecutionTimeout(ctx); timeout > 0 {
@@ -340,8 +383,14 @@ func runPreparedPayload(ctx context.Context, c *cache, main payloadEntry, includ
 		defer executionCancel()
 		executionStarted := time.Now()
 		executionErr := runSSH(executionCtx, access, false, command, os.Stdin, targetOutput, targetError)
-		executionTimeout := payloadExecutionTimeout(ctx)
 		executionElapsed := time.Since(executionStarted)
+		if executionSerial != nil {
+			executionSerial.Close()
+			if serialErr := bindPayloadExecutionSerialEvidence(serialEvidence, executionSerial.log.Name()); serialErr != nil {
+				executionErr = errors.Join(executionErr, fmt.Errorf("bind execution UART evidence: %w", serialErr))
+			}
+		}
+		executionTimeout := payloadExecutionTimeout(ctx)
 		if payloadExecutionDeadlineReached(executionCtx, executionErr, executionElapsed, executionTimeout) {
 			return fmt.Errorf("%w after %s: %v", errPayloadExecutionTimeout, executionTimeout, executionErr)
 		}

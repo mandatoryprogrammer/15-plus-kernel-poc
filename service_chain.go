@@ -42,27 +42,30 @@ type serviceChainManifest struct {
 }
 
 type serviceChainReport struct {
-	Schema            string    `json:"schema"`
-	StartedAt         string    `json:"started_at"`
-	FinishedAt        string    `json:"finished_at"`
-	Manifest          string    `json:"manifest"`
-	ManifestSHA256    string    `json:"manifest_sha256"`
-	Name              string    `json:"name"`
-	Services          []string  `json:"services"`
-	LauncherMode      string    `json:"launcher_mode"`
-	Arguments         []string  `json:"arguments"`
-	Program           uiProgram `json:"program"`
-	ChainReady        bool      `json:"chain_ready"`
-	ProgramReached    bool      `json:"program_reached"`
-	ExecutionTimeout  string    `json:"execution_timeout"`
-	ExecutionTimedOut bool      `json:"execution_timed_out"`
-	ExecutionKilled   bool      `json:"execution_killed"`
-	ExecutionTerminal string    `json:"execution_terminal,omitempty"`
-	RecoveryCleanup   string    `json:"recovery_cleanup,omitempty"`
-	Markers           []string  `json:"markers,omitempty"`
-	OutputTruncated   bool      `json:"output_truncated,omitempty"`
-	Exit              string    `json:"exit"`
-	Error             string    `json:"error,omitempty"`
+	Schema                string    `json:"schema"`
+	StartedAt             string    `json:"started_at"`
+	FinishedAt            string    `json:"finished_at"`
+	Manifest              string    `json:"manifest"`
+	ManifestSHA256        string    `json:"manifest_sha256"`
+	Name                  string    `json:"name"`
+	Services              []string  `json:"services"`
+	LauncherMode          string    `json:"launcher_mode"`
+	Arguments             []string  `json:"arguments"`
+	Program               uiProgram `json:"program"`
+	ChainReady            bool      `json:"chain_ready"`
+	ProgramReached        bool      `json:"program_reached"`
+	ExecutionTimeout      string    `json:"execution_timeout"`
+	ExecutionTimedOut     bool      `json:"execution_timed_out"`
+	ExecutionKilled       bool      `json:"execution_killed"`
+	ExecutionSerialLog    string    `json:"execution_serial_log,omitempty"`
+	ExecutionSerialBytes  int64     `json:"execution_serial_bytes,omitempty"`
+	ExecutionSerialSHA256 string    `json:"execution_serial_sha256,omitempty"`
+	ExecutionTerminal     string    `json:"execution_terminal,omitempty"`
+	RecoveryCleanup       string    `json:"recovery_cleanup,omitempty"`
+	Markers               []string  `json:"markers,omitempty"`
+	OutputTruncated       bool      `json:"output_truncated,omitempty"`
+	Exit                  string    `json:"exit"`
+	Error                 string    `json:"error,omitempty"`
 }
 
 type machServiceReport struct {
@@ -148,6 +151,22 @@ func serviceChainExecutionTimeout(value serviceChainManifest) (time.Duration, er
 		return 0, fmt.Errorf("service-chain execution_timeout must be between %s and %s", minimumServiceChainExecutionTimeout, maximumServiceChainExecutionTimeout)
 	}
 	return timeout, nil
+}
+
+func serviceChainExecutionContext(ctx context.Context, timeout time.Duration,
+	serial *payloadExecutionSerialEvidence) context.Context {
+	return withPayloadExecutionSerialCapture(
+		withPayloadExecutionTimeout(ctx, timeout), serial)
+}
+
+func recordServiceChainExecutionSerial(report *serviceChainReport,
+	serial *payloadExecutionSerialEvidence) {
+	if serial == nil {
+		return
+	}
+	report.ExecutionSerialLog = serial.Path
+	report.ExecutionSerialBytes = serial.Bytes
+	report.ExecutionSerialSHA256 = serial.SHA256
 }
 
 func validateServiceChainManifest(value serviceChainManifest) error {
@@ -316,7 +335,11 @@ func runServiceChain(ctx context.Context, c *cache, manifestPath string, program
 		errorWriter = os.Stderr
 	}
 	c.targetErr = io.MultiWriter(errorWriter, capture)
-	runErr = runPayload(withPayloadExecutionTimeout(ctx, executionTimeout), c, runArguments)
+	serialEvidence := &payloadExecutionSerialEvidence{}
+	executionContext := serviceChainExecutionContext(ctx, executionTimeout,
+		serialEvidence)
+	runErr = runPayload(executionContext, c, runArguments)
+	recordServiceChainExecutionSerial(&report, serialEvidence)
 	c.targetOut = originalOutput
 	c.targetErr = originalError
 	captured, truncated := capture.snapshot()

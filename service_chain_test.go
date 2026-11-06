@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -139,6 +140,29 @@ func TestDefaultDisplayChainSelectsReportedExecutionTimeout(t *testing.T) {
 		report.Program.SHA256 != "program-sha" ||
 		!reflect.DeepEqual(report.Arguments, []string{"-h"}) {
 		t.Fatalf("initial report lost run identity: %+v", report)
+	}
+}
+
+func TestServiceChainExecutionContextPrearmsAndReportsUART(t *testing.T) {
+	evidence := &payloadExecutionSerialEvidence{
+		Path: filepath.Join(t.TempDir(), "serial.log"), Bytes: 1234,
+		SHA256: strings.Repeat("a", 64),
+	}
+	ctx := serviceChainExecutionContext(context.Background(), 16*time.Second,
+		evidence)
+	if payloadExecutionTimeout(ctx) != 16*time.Second ||
+		payloadExecutionSerialCapture(ctx) != evidence {
+		t.Fatal("service-chain execution context lost timeout or UART capture")
+	}
+	if _, ok := ctx.Deadline(); ok {
+		t.Fatal("service-chain execution metadata shortened preparation context")
+	}
+	report := serviceChainReport{}
+	recordServiceChainExecutionSerial(&report, evidence)
+	if report.ExecutionSerialLog != evidence.Path ||
+		report.ExecutionSerialBytes != evidence.Bytes ||
+		report.ExecutionSerialSHA256 != evidence.SHA256 {
+		t.Fatalf("service-chain UART report changed: %+v", report)
 	}
 }
 

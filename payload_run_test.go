@@ -56,6 +56,30 @@ func TestPayloadExecutionTimeoutAppliesOnlyWhenExplicit(t *testing.T) {
 	}
 }
 
+func TestPayloadExecutionSerialCaptureIsExplicitAndBindsIdentity(t *testing.T) {
+	base := context.Background()
+	if payloadExecutionSerialCapture(base) != nil {
+		t.Fatal("plain context requested execution UART capture")
+	}
+	evidence := &payloadExecutionSerialEvidence{}
+	bounded := withPayloadExecutionSerialCapture(base, evidence)
+	if payloadExecutionSerialCapture(bounded) != evidence {
+		t.Fatal("execution UART evidence pointer was not preserved")
+	}
+	body := []byte("launchd execution UART\n")
+	path := filepath.Join(t.TempDir(), "serial.log")
+	if err := os.WriteFile(path, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := bindPayloadExecutionSerialEvidence(evidence, path); err != nil {
+		t.Fatal(err)
+	}
+	if evidence.Path != path || evidence.Bytes != int64(len(body)) ||
+		evidence.SHA256 != digest(body) {
+		t.Fatalf("execution UART identity changed: %+v", evidence)
+	}
+}
+
 func TestPayloadExecutionDeadlineClassificationHandlesSSHExitRace(t *testing.T) {
 	exitErr := errors.New("remote process exited with signal KILL")
 	timeout := 10 * time.Second
