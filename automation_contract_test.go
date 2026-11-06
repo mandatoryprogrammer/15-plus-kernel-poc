@@ -152,19 +152,20 @@ func TestServiceChainProfileBindsExactInputsAndRejectsMutation(t *testing.T) {
 	native := filepath.Join(root, "native")
 	cryptex := filepath.Join(root, "cryptex")
 	trust := filepath.Join(root, "trust")
+	launcher := filepath.Join(root, "launcher")
 	manifestBody := []byte("{\n  \"schema\": \"15-plus-kernel-poc.service-chain.v1\",\n  \"name\": \"test\",\n  \"services\": [\"hidd.nonui\"]\n}\n")
-	for name, body := range map[string][]byte{manifest: manifestBody, native: []byte("native"), cryptex: []byte("cryptex"), trust: []byte("trust")} {
+	for name, body := range map[string][]byte{manifest: manifestBody, launcher: []byte("launcher"), native: []byte("native"), cryptex: []byte("cryptex"), trust: []byte("trust")} {
 		if err := os.WriteFile(name, body, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	args := []string{"bind", "product-hidd-systemos", "--manifest", manifest, "--preserve-native", native + "=/usr/local/libexec/hidd", "--systemos-cryptex", cryptex, "--systemos-cryptex-trust-cache", trust}
+	args := []string{"bind", "product-hidd-systemos", "--manifest", manifest, "--launcher", launcher, "--preserve-native", native + "=/usr/local/libexec/hidd", "--systemos-cryptex", cryptex, "--systemos-cryptex-trust-cache", trust}
 	if err := serviceChainProfileCommand(context.Background(), c, args); err != nil {
 		t.Fatal(err)
 	}
 	profile, ok, err := loadServiceChainProfile(c, "product-hidd-systemos")
-	if err != nil || !ok || profile.PreservedNative == nil || profile.SystemOSCryptex == nil || profile.SystemOSTrust == nil || profile.PreservedDestination != "/usr/local/libexec/hidd" ||
-		profile.PreservedNative.Path != native || profile.SystemOSCryptex.Path != cryptex || profile.SystemOSTrust.Path != trust {
+	if err != nil || !ok || profile.Launcher == nil || profile.PreservedNative == nil || profile.SystemOSCryptex == nil || profile.SystemOSTrust == nil || profile.PreservedDestination != "/usr/local/libexec/hidd" ||
+		profile.Launcher.Path != launcher || profile.PreservedNative.Path != native || profile.SystemOSCryptex.Path != cryptex || profile.SystemOSTrust.Path != trust {
 		t.Fatalf("profile incomplete: %+v ok=%v err=%v", profile, ok, err)
 	}
 	if err = os.WriteFile(native, []byte("mutated"), 0o600); err != nil {

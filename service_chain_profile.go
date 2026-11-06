@@ -22,6 +22,7 @@ type serviceChainProfile struct {
 	Schema               string                    `json:"schema"`
 	Name                 string                    `json:"name"`
 	Manifest             serviceChainProfileInput  `json:"manifest"`
+	Launcher             *serviceChainProfileInput `json:"launcher,omitempty"`
 	PreservedNative      *serviceChainProfileInput `json:"preserved_native,omitempty"`
 	PreservedDestination string                    `json:"preserved_destination,omitempty"`
 	SystemOSCryptex      *serviceChainProfileInput `json:"systemos_cryptex,omitempty"`
@@ -65,14 +66,14 @@ func serviceChainProfileCommand(_ context.Context, c *cache, args []string) erro
 		return nil
 	}
 	if len(args) < 4 || args[0] != "bind" {
-		return errors.New("usage: service-chain profile bind NAME --manifest FILE [--preserve-native FILE=DEST] [--systemos-cryptex IMAGE --systemos-cryptex-trust-cache FILE] | service-chain profile show NAME")
+		return errors.New("usage: service-chain profile bind NAME --manifest FILE [--launcher FILE] [--preserve-native FILE=DEST] [--systemos-cryptex IMAGE --systemos-cryptex-trust-cache FILE] | service-chain profile show NAME")
 	}
 	name := args[1]
 	if !machServiceName.MatchString(name) {
 		return errors.New("profile name must contain only letters, digits, dot, underscore, or hyphen")
 	}
 	profile := serviceChainProfile{Schema: serviceChainProfileSchema, Name: name}
-	var manifest, native, cryptex, trust, destination string
+	var manifest, launcher, native, cryptex, trust, destination string
 	for index := 2; index < len(args); index++ {
 		if index+1 >= len(args) {
 			return fmt.Errorf("%s needs a value", args[index])
@@ -85,6 +86,11 @@ func serviceChainProfileCommand(_ context.Context, c *cache, args []string) erro
 				return errors.New("--manifest may appear once")
 			}
 			manifest = value
+		case "--launcher":
+			if launcher != "" {
+				return errors.New("--launcher may appear once")
+			}
+			launcher = value
 		case "--preserve-native":
 			if native != "" {
 				return errors.New("--preserve-native may appear once")
@@ -120,6 +126,13 @@ func serviceChainProfileCommand(_ context.Context, c *cache, args []string) erro
 	var err error
 	if profile.Manifest, err = serviceChainProfileInputFor(manifest); err != nil {
 		return err
+	}
+	if launcher != "" {
+		value, inputErr := serviceChainProfileInputFor(launcher)
+		if inputErr != nil {
+			return inputErr
+		}
+		profile.Launcher = &value
 	}
 	if native != "" {
 		value, inputErr := serviceChainProfileInputFor(native)
@@ -179,7 +192,7 @@ func loadServiceChainProfile(c *cache, name string) (serviceChainProfile, bool, 
 	if profile.Schema != serviceChainProfileSchema || profile.Name != name {
 		return profile, false, errors.New("invalid service-chain profile")
 	}
-	for _, input := range []*serviceChainProfileInput{&profile.Manifest, profile.PreservedNative, profile.SystemOSCryptex, profile.SystemOSTrust} {
+	for _, input := range []*serviceChainProfileInput{&profile.Manifest, profile.Launcher, profile.PreservedNative, profile.SystemOSCryptex, profile.SystemOSTrust} {
 		if err = verifyServiceChainProfileInput(input); err != nil {
 			return profile, false, err
 		}

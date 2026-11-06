@@ -476,11 +476,14 @@ func serviceChainCommand(ctx context.Context, c *cache, args []string) error {
 		if err != nil {
 			return err
 		}
+		var runProfile *serviceChainProfile
 		if manifestPath == "default" {
 			manifestPath = filepath.Join(filepath.Dir(c.root), "examples", "productos-display-chain.json")
 		} else if profile, ok, profileErr := loadServiceChainProfile(c, manifestPath); profileErr != nil {
 			return profileErr
 		} else if ok {
+			selected := profile
+			runProfile = &selected
 			manifestPath = profile.Manifest.Path
 			if nativeExecutable != nil || systemOSCryptexPath != "" || systemOSCryptexTrustPath != "" {
 				return errors.New("named profile inputs cannot be overridden")
@@ -495,13 +498,37 @@ func serviceChainCommand(ctx context.Context, c *cache, args []string) error {
 				systemOSCryptexTrustPath = profile.SystemOSTrust.Path
 			}
 		}
+		var priorProfile *uiProfile
+		if programPath != "" || runProfile != nil && runProfile.Launcher != nil {
+			profile, loadErr := loadUIProfile(ctx, c)
+			if loadErr != nil {
+				return loadErr
+			}
+			priorProfile = &profile
+		}
+		if runProfile != nil && runProfile.Launcher != nil {
+			if err = importUIRootLauncher(ctx, c, runProfile.Launcher.Path); err != nil {
+				return fmt.Errorf("select service-chain launcher: %w", err)
+			}
+		}
 		if programPath != "" {
 			if err = importUIProgram(ctx, c, programPath, ""); err != nil {
+				if priorProfile != nil {
+					_ = writeUIProfile(c, *priorProfile)
+				}
 				return fmt.Errorf("select service-chain program: %w", err)
 			}
 		}
-		return runServiceChain(ctx, c, manifestPath, nativeExecutable,
+		runErr := runServiceChain(ctx, c, manifestPath, nativeExecutable,
 			systemOSCryptexPath, systemOSCryptexTrustPath, programArguments)
+		if priorProfile != nil {
+			if restoreErr := writeUIProfile(c, *priorProfile); restoreErr != nil {
+				runErr = errors.Join(runErr, fmt.Errorf("restore prior UI profile: %w", restoreErr))
+			} else {
+				fmt.Fprintln(c.out, "Restored prior UI launcher and program profile after service-chain run")
+			}
+		}
+		return runErr
 	}
 	return errors.New("usage: service-chain profile bind|show ... | service-chain validate MANIFEST | service-chain run MANIFEST|PROFILE|default [--program FILE] [--preserve-native FILE=DEST] [--systemos-cryptex IMAGE --systemos-cryptex-trust-cache FILE] [-- PROGRAM-ARG...]")
 }

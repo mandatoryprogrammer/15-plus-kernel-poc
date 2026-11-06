@@ -311,6 +311,7 @@ Bind a repeated physical topology once, then supply only the research program:
 ```sh
 go run . service-chain profile bind product-hidd-systemos \
   --manifest examples/productos-display-chain.json \
+  --launcher /path/to/productos-ui-root-launcher \
   --preserve-native /path/to/hidd=/usr/local/libexec/productos-hidd.nonui \
   --systemos-cryptex /path/to/SystemOS.ulfo.dmg \
   --systemos-cryptex-trust-cache /path/to/SystemOS.trustcache
@@ -319,9 +320,10 @@ go run . service-chain run product-hidd-systemos --program /path/to/probe -- --p
 ```
 
 Every profile input is absolute and hash-bound; a changed or missing file is
-rejected before device contact. `--program` performs the normal deterministic
+rejected before device contact. A profile launcher and `--program` perform the normal deterministic
 program import, so CDHash generation and exact staging are not separate agent
-steps. At terminal cleanup, the command writes
+steps. The prior UI launcher/program profile is restored after the bounded run.
+At terminal cleanup, the command writes
 `.cache/private/service-chain-evidence-latest.json` with the outcome,
 program/admission/cryptex/trust identities, selected structured markers,
 payload transfer/readback report, and cleanup classification. Only the newest
