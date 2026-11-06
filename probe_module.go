@@ -213,7 +213,9 @@ static int poc_breakpoint_install_dyld_notifier(struct poc_target_controller *co
 }
 `)
 	}
-	for index, symbol := range contract.Symbols {
+	fmt.Fprintf(&source, "#define POC_BREAKPOINT_COUNT %d\n", len(contract.Symbols))
+	source.WriteString("static const struct poc_breakpoint_spec poc_breakpoints[POC_BREAKPOINT_COUNT] = {\n")
+	for _, symbol := range contract.Symbols {
 		preimage, decodeErr := hex.DecodeString(symbol.PreimageHex)
 		if decodeErr != nil || len(preimage) != 16 {
 			return nil, fmt.Errorf("symbol %s has invalid preimage", symbol.Name)
@@ -222,9 +224,9 @@ static int poc_breakpoint_install_dyld_notifier(struct poc_target_controller *co
 		for i, value := range preimage {
 			items[i] = fmt.Sprintf("0x%02x", value)
 		}
-		fmt.Fprintf(&source, "static const struct poc_breakpoint_spec poc_breakpoint_%d = {%s, 0x%xULL, {%s}};\n", index, strconv.Quote(symbol.Name), symbol.Address, strings.Join(items, ","))
+		fmt.Fprintf(&source, "    {%s, 0x%xULL, {%s}},\n", strconv.Quote(symbol.Name), symbol.Address, strings.Join(items, ","))
 	}
-	fmt.Fprintf(&source, "#define POC_BREAKPOINT_COUNT %d\n", len(contract.Symbols))
+	source.WriteString("};\n")
 	source.WriteString(`static int poc_validate_breakpoint_preimage(poc_port task, const struct poc_target_image *image, const struct poc_breakpoint_spec *spec) {
     poc_u8 actual[16]; if (poc_remote_read(task, poc_static_to_runtime(image, spec->static_address), actual, sizeof(actual)) != 0) return -1;
     unsigned diff=0; for (unsigned i=0; i != 16; ++i) diff |= actual[i]^spec->preimage[i]; return diff == 0 ? 0 : -2;

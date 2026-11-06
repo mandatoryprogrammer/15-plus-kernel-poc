@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"debug/macho"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -49,6 +51,15 @@ type targetImageContract struct {
 	Sections        []targetImageSection `json:"sections,omitempty"`
 	Symbols         []targetImageSymbol  `json:"symbols"`
 	LooseDyld       *targetLooseDyld     `json:"loose_dyld,omitempty"`
+	SourceReport    *targetSourceReport  `json:"source_report,omitempty"`
+}
+
+type targetSourceReport struct {
+	Path   string   `json:"path"`
+	Bytes  int64    `json:"bytes"`
+	SHA256 string   `json:"sha256"`
+	Schema string   `json:"schema"`
+	Roles  []string `json:"roles"`
 }
 
 type targetLooseDyld struct {
@@ -61,8 +72,8 @@ type targetLooseDyld struct {
 }
 
 type targetImageContractOptions struct {
-	Cache, Image, Destination, Dyld, DyldNotifier string
-	Symbols, Sections                             []string
+	Cache, Image, Destination, Dyld, DyldNotifier, Report string
+	Symbols, Sections, Roles                              []string
 }
 
 func parseTargetImageContract(args []string) (targetImageContractOptions, error) {
@@ -89,6 +100,21 @@ func parseTargetImageContract(args []string) (targetImageContractOptions, error)
 				return options, fmt.Errorf("invalid symbol %q", value)
 			}
 			options.Symbols = append(options.Symbols, value)
+		case "--report":
+			if options.Report != "" {
+				return options, errors.New("--report may appear only once")
+			}
+			options.Report = value
+		case "--role":
+			if !probeSymbolPattern.MatchString(value) {
+				return options, fmt.Errorf("invalid report role %q", value)
+			}
+			for _, existing := range options.Roles {
+				if existing == value {
+					return options, fmt.Errorf("duplicate report role %q", value)
+				}
+			}
+			options.Roles = append(options.Roles, value)
 		case "--section":
 			parts := strings.Split(value, ",")
 			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
@@ -114,8 +140,11 @@ func parseTargetImageContract(args []string) (targetImageContractOptions, error)
 			return options, fmt.Errorf("unknown target image-contract option %q", option)
 		}
 	}
-	if options.Cache == "" || options.Image == "" || len(options.Symbols) == 0 {
-		return options, errors.New("target image-contract requires --cache FILE, --image PATH, and at least one --symbol NAME")
+	if options.Cache == "" || options.Image == "" || len(options.Symbols)+len(options.Roles) == 0 {
+		return options, errors.New("target image-contract requires --cache FILE, --image PATH, and at least one --symbol NAME or --report FILE/--role ROLE")
+	}
+	if (options.Report == "") != (len(options.Roles) == 0) {
+		return options, errors.New("--report FILE and at least one --role ROLE must be used together")
 	}
 	if options.DyldNotifier != "" && options.Dyld == "" {
 		return options, errors.New("--dyld-notifier requires --dyld FILE")
@@ -124,6 +153,90 @@ func parseTargetImageContract(args []string) (targetImageContractOptions, error)
 		options.DyldNotifier = "lldb_image_notifier"
 	}
 	return options, nil
+}
+
+type targetRoleReport struct {
+	Schema      string `json:"schema"`
+	SharedCache struct {
+		UUID string `json:"uuid"`
+	} `json:"shared_cache"`
+	QuartzCore struct {
+		Path        string `json:"path"`
+		UUID        string `json:"uuid"`
+		LoadAddress string `json:"load_address"`
+	} `json:"quartzcore"`
+	Functions []struct {
+		Role   string `json:"role"`
+		Start  string `json:"start"`
+		Bytes  int    `json:"bytes"`
+		SHA256 string `json:"sha256"`
+		Hex    string `json:"hex"`
+	} `json:"functions"`
+}
+
+func compactTargetUUID(value string) string {
+	return strings.ToLower(strings.ReplaceAll(value, "-", ""))
+}
+
+func targetContractAddressToOffset(segments []contractSegment, address, length uint64) (uint64, error) {
+	for _, segment := range segments {
+		if address < segment.VMAddress || address+length < address ||
+			address+length > segment.VMAddress+segment.FileSize {
+			continue
+		}
+		return segment.FileOffset + address - segment.VMAddress, nil
+	}
+	return 0, fmt.Errorf("report target 0x%x is not backed by extracted image bytes", address)
+}
+
+func targetReportRoleSymbols(contract targetImageContract, reportBody, imageBody []byte, roles []string) ([]targetImageSymbol, string, error) {
+	var report targetRoleReport
+	if err := json.Unmarshal(reportBody, &report); err != nil {
+		return nil, "", fmt.Errorf("decode target role report: %w", err)
+	}
+	if report.Schema != "productos-carenderserver-display-list-contract.v2" {
+		return nil, report.Schema, fmt.Errorf("target role report schema %q is unsupported", report.Schema)
+	}
+	loadAddress, err := strconv.ParseUint(report.QuartzCore.LoadAddress, 0, 64)
+	if err != nil || compactTargetUUID(report.SharedCache.UUID) != compactTargetUUID(contract.CacheUUID) ||
+		compactTargetUUID(report.QuartzCore.UUID) != compactTargetUUID(contract.ImageUUID) ||
+		report.QuartzCore.Path != contract.ImagePath || loadAddress != contract.StaticBase {
+		return nil, report.Schema, fmt.Errorf("target role report cache/image identity does not match extracted contract")
+	}
+	wanted := make(map[string]bool, len(roles))
+	for _, role := range roles {
+		wanted[role] = true
+	}
+	seen := make(map[string]bool, len(roles))
+	var symbols []targetImageSymbol
+	for _, function := range report.Functions {
+		if !wanted[function.Role] {
+			continue
+		}
+		if seen[function.Role] {
+			return nil, report.Schema, fmt.Errorf("target role report contains duplicate role %q", function.Role)
+		}
+		seen[function.Role] = true
+		address, parseErr := strconv.ParseUint(function.Start, 0, 64)
+		body, decodeErr := hex.DecodeString(function.Hex)
+		if parseErr != nil || decodeErr != nil || function.Bytes < 16 || len(body) != function.Bytes || digest(body) != function.SHA256 {
+			return nil, report.Schema, fmt.Errorf("target role %q function identity is invalid", function.Role)
+		}
+		offset, mapErr := targetContractAddressToOffset(contract.Segments, address, 16)
+		if mapErr != nil || offset+16 > uint64(len(imageBody)) || !bytes.Equal(imageBody[offset:offset+16], body[:16]) {
+			return nil, report.Schema, fmt.Errorf("target role %q preimage does not match extracted image", function.Role)
+		}
+		preimage := body[:16]
+		symbols = append(symbols, targetImageSymbol{Name: function.Role, Address: address,
+			ImageOffset: address - contract.StaticBase, FileOffset: offset,
+			PreimageHex: hex.EncodeToString(preimage), PreimageSHA256: digest(preimage)})
+	}
+	for _, role := range roles {
+		if !seen[role] {
+			return nil, report.Schema, fmt.Errorf("target role report lacks role %q", role)
+		}
+	}
+	return symbols, report.Schema, nil
 }
 
 func inspectLooseDyld(path, notifier string) (*targetLooseDyld, error) {
@@ -277,7 +390,7 @@ func targetImageContractCommand(ctx context.Context, c *cache, args []string) er
 			return fmt.Errorf("requested section %s is absent from %s", requested, options.Image)
 		}
 	}
-	if file.Symtab == nil {
+	if len(options.Symbols) != 0 && file.Symtab == nil {
 		return errors.New("extracted image has no symbol table")
 	}
 	for _, requested := range options.Symbols {
@@ -303,7 +416,34 @@ func targetImageContractCommand(ctx context.Context, c *cache, args []string) er
 			return fmt.Errorf("requested symbol %q is absent from %s", requested, options.Image)
 		}
 	}
+	if options.Report != "" {
+		reportPath, reportBytes, reportSHA, reportErr := readRegularIdentity(options.Report)
+		if reportErr != nil {
+			return reportErr
+		}
+		reportBody, reportErr := os.ReadFile(reportPath)
+		if reportErr != nil {
+			return reportErr
+		}
+		roles, reportSchema, reportErr := targetReportRoleSymbols(contract, reportBody, imageBody, options.Roles)
+		if reportErr != nil {
+			return reportErr
+		}
+		contract.Symbols = append(contract.Symbols, roles...)
+		contract.SourceReport = &targetSourceReport{Path: reportPath, Bytes: reportBytes,
+			SHA256: reportSHA, Schema: reportSchema, Roles: append([]string(nil), options.Roles...)}
+	}
 	sort.Slice(contract.Symbols, func(i, j int) bool { return contract.Symbols[i].Name < contract.Symbols[j].Name })
+	for index, symbol := range contract.Symbols {
+		if index != 0 && (symbol.Name == contract.Symbols[index-1].Name || symbol.Address == contract.Symbols[index-1].Address) {
+			return fmt.Errorf("duplicate target name or address after report binding: %q at 0x%x", symbol.Name, symbol.Address)
+		}
+		for prior := 0; prior < index; prior++ {
+			if symbol.Address == contract.Symbols[prior].Address {
+				return fmt.Errorf("duplicate target address after report binding: 0x%x", symbol.Address)
+			}
+		}
+	}
 	body, err := json.MarshalIndent(contract, "", "  ")
 	if err != nil {
 		return err

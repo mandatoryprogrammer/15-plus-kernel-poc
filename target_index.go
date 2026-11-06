@@ -87,7 +87,7 @@ func targetCommand(ctx context.Context, c *cache, args []string) error {
 	if len(args) >= 1 && args[0] == "image-contract" {
 		return targetImageContractCommand(ctx, c, args[1:])
 	}
-	return errors.New("usage: target index PRODUCTOS_ROOT | target image-contract --cache FILE --image PATH --symbol NAME [--dyld FILE --dyld-notifier SYMBOL] [--section SEGMENT,SECTION]... [--dest FILE]")
+	return errors.New("usage: target index PRODUCTOS_ROOT | target image-contract --cache FILE --image PATH (--symbol NAME | --report FILE --role ROLE)... [--dyld FILE --dyld-notifier SYMBOL] [--section SEGMENT,SECTION]... [--dest FILE]")
 }
 
 func targetIndexCommand(ctx context.Context, c *cache, args []string) error {

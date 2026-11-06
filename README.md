@@ -233,8 +233,9 @@ go run . contract bind \
 go run . target image-contract \
   --cache /path/to/dyld_shared_cache_arm64e \
   --image /System/Library/Frameworks/QuartzCore.framework/QuartzCore \
-  --symbol CARenderServerRegister \
-  --symbol CARenderServerGetDisplayLogicalBounds \
+  --report /path/to/carenderserver-display-list-contract.json \
+  --role producer-registration \
+  --role producer-callback \
   --section __TEXT,__text \
   --dyld /Volumes/ramdisk/usr/lib/dyld \
   --dyld-notifier lldb_image_notifier \
@@ -259,6 +260,9 @@ and one-line `POC_TARGET_CONTROL` JSON events. Any UUID or 16-byte instruction
 preimage mismatch fails before changing final breakpoints. `ipsw` is used only
 as a pinned host data-plane parser; its extracted image lives in tool-owned
 scratch and is removed on both success and failure.
+Stripped targets may be selected only through `--report FILE --role ROLE`; the
+report schema, complete function hash, cache/image identity, and extracted-image
+16-byte preimage are checked before the role enters the generated controller.
 
 ### One-command remote UI
 

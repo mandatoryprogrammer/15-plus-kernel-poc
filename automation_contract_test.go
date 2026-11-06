@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -102,13 +103,125 @@ func TestTargetControlModuleOwnsResolutionTransitionAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"TASK_DYLD_INFO", "POC_TASK_DYLD_INFO_COUNT 5", "poc_target_dyld_snapshot_read", "poc_target_image_resolve", "poc_expected_cache_uuid", "poc_xpaci", "poc_target_dyld_notifier_resolve", "poc_breakpoint_install_dyld_notifier", "poc_validate_breakpoint_preimage", "poc_breakpoint_temporary_to_final", "task_get_exception_ports", "poc_controller_cleanup", "POC_TARGET_CONTROL {\\\"phase\\\""} {
+	for _, required := range []string{"TASK_DYLD_INFO", "POC_TASK_DYLD_INFO_COUNT 5", "poc_target_dyld_snapshot_read", "poc_target_image_resolve", "poc_expected_cache_uuid", "poc_xpaci", "poc_target_dyld_notifier_resolve", "poc_breakpoint_install_dyld_notifier", "poc_breakpoints[POC_BREAKPOINT_COUNT]", "poc_validate_breakpoint_preimage", "poc_breakpoint_temporary_to_final", "task_get_exception_ports", "poc_controller_cleanup", "POC_TARGET_CONTROL {\\\"phase\\\""} {
 		if !bytes.Contains(source, []byte(required)) {
 			t.Fatalf("generated target controller lacks %q", required)
 		}
 	}
 	if bytes.Contains(source, []byte("0x0ULL, {0x00")) {
 		t.Fatal("generated target controller lost the exact preimage")
+	}
+}
+
+func syntheticTargetRoleInputs(t *testing.T) (targetImageContract, []byte, map[string]any) {
+	t.Helper()
+	image := make([]byte, 64)
+	registration := []byte{0x7f, 0x23, 0x03, 0xd5, 0xfa, 0x67, 0xbb, 0xa9, 0xf8, 0x5f, 0x01, 0xa9, 0xf6, 0x57, 0x02, 0xa9}
+	callback := []byte{0x7f, 0x23, 0x03, 0xd5, 0xff, 0xc3, 0x02, 0xd1, 0xf4, 0x4f, 0x09, 0xa9, 0xfd, 0x7b, 0x0a, 0xa9}
+	copy(image[16:32], registration)
+	copy(image[32:48], callback)
+	contract := targetImageContract{
+		Schema: targetImageContractSchema, CacheUUID: "11CAD49B-2122-31EE-8B7C-CCF1BC3A6728",
+		ImagePath: "/System/Library/Frameworks/QuartzCore.framework/QuartzCore",
+		ImageUUID: "EC544EA0-5157-34A8-A85A-0F3BCCE6D272", StaticBase: 0x1000,
+		Segments: []contractSegment{{Name: "__TEXT", VMAddress: 0x1000, VMSize: 64, FileOffset: 0, FileSize: 64}},
+	}
+	report := map[string]any{
+		"schema":       "productos-carenderserver-display-list-contract.v2",
+		"shared_cache": map[string]any{"uuid": "11cad49b212231ee8b7cccf1bc3a6728"},
+		"quartzcore": map[string]any{
+			"path": contract.ImagePath, "uuid": "ec544ea0515734a8a85a0f3bcce6d272", "load_address": "0x1000",
+		},
+		"functions": []any{
+			map[string]any{"role": "producer-registration", "start": "0x1010", "bytes": len(registration), "sha256": digest(registration), "hex": fmt.Sprintf("%x", registration)},
+			map[string]any{"role": "producer-callback", "start": "0x1020", "bytes": len(callback), "sha256": digest(callback), "hex": fmt.Sprintf("%x", callback)},
+		},
+	}
+	return contract, image, report
+}
+
+func targetRoleReportBody(t *testing.T, report map[string]any) []byte {
+	t.Helper()
+	body, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func TestTargetImageContractBindsStrippedReportRolesToExtractedPreimages(t *testing.T) {
+	contract, image, report := syntheticTargetRoleInputs(t)
+	symbols, schema, err := targetReportRoleSymbols(contract, targetRoleReportBody(t, report), image,
+		[]string{"producer-registration", "producer-callback"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if schema != "productos-carenderserver-display-list-contract.v2" || len(symbols) != 2 ||
+		symbols[0].Name != "producer-registration" || symbols[0].Address != 0x1010 ||
+		symbols[1].Name != "producer-callback" || symbols[1].Address != 0x1020 {
+		t.Fatalf("report roles were not bound exactly: schema=%q symbols=%+v", schema, symbols)
+	}
+	for _, symbol := range symbols {
+		if len(symbol.PreimageHex) != 32 || symbol.PreimageSHA256 == "" {
+			t.Fatalf("report role lost its exact preimage: %+v", symbol)
+		}
+	}
+}
+
+func TestTargetImageContractReportRoleMutationsReachNamedChecks(t *testing.T) {
+	contract, image, base := syntheticTargetRoleInputs(t)
+	tests := []struct {
+		name, want string
+		mutate     func(map[string]any, []byte) []byte
+	}{
+		{"schema", "schema", func(report map[string]any, image []byte) []byte { report["schema"] = "wrong.v1"; return image }},
+		{"cache identity", "cache/image identity", func(report map[string]any, image []byte) []byte {
+			report["shared_cache"].(map[string]any)["uuid"] = "00"
+			return image
+		}},
+		{"function identity", "function identity", func(report map[string]any, image []byte) []byte {
+			report["functions"].([]any)[0].(map[string]any)["sha256"] = strings.Repeat("0", 64)
+			return image
+		}},
+		{"extracted preimage", "preimage does not match", func(report map[string]any, image []byte) []byte {
+			changed := bytes.Clone(image)
+			changed[16] ^= 1
+			return changed
+		}},
+		{"missing role", "lacks role", func(report map[string]any, image []byte) []byte {
+			report["functions"] = report["functions"].([]any)[:1]
+			return image
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			encoded, err := json.Marshal(base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var report map[string]any
+			if err = json.Unmarshal(encoded, &report); err != nil {
+				t.Fatal(err)
+			}
+			mutatedImage := test.mutate(report, image)
+			_, _, err = targetReportRoleSymbols(contract, targetRoleReportBody(t, report), mutatedImage,
+				[]string{"producer-registration", "producer-callback"})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("mutation error=%v want site containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestTargetImageContractReportRoleArgumentsFailClosed(t *testing.T) {
+	for _, args := range [][]string{
+		{"--cache", "cache", "--image", "image", "--report", "report"},
+		{"--cache", "cache", "--image", "image", "--role", "producer-registration"},
+		{"--cache", "cache", "--image", "image", "--report", "report", "--role", "producer-registration", "--role", "producer-registration"},
+	} {
+		if _, err := parseTargetImageContract(args); err == nil {
+			t.Fatalf("invalid report-role arguments were accepted: %v", args)
+		}
 	}
 }
 
