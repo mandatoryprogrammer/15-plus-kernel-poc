@@ -31,7 +31,7 @@ func systemOSPreflightFixture(stage string) []byte {
 		owner, partial, entries = "1", "1", "2"
 	}
 	return []byte("SYSTEMOS_CRYPTEX_PREFLIGHT physical=" + systemOSCryptexProductMount +
-		" target_entries=0 stage=" + stage + " owner=" + owner + " final=" + final +
+		" resolution_exact=1 target_entries=0 stage=" + stage + " owner=" + owner + " final=" + final +
 		" partial=" + partial + " stage_entries=" + entries + "\nSYSTEMOS_MOUNTS_BEGIN\n" +
 		systemOSMountFixture(false) + "SYSTEMOS_MOUNTS_END\n")
 }
@@ -110,7 +110,8 @@ func TestSystemOSCryptexPreflightBindsProductResolutionAndOwnedStage(t *testing.
 	mutations := []struct {
 		name, old, new, want string
 	}{
-		{"physical namespace", systemOSCryptexProductMount, systemOSCryptexPrebootMount + "/Cryptexes/OS", "mount preimage"},
+		{"physical namespace", systemOSCryptexProductMount, systemOSCryptexPrebootMount + "/Cryptexes/OS", "resolved to"},
+		{"resolution assertion", "resolution_exact=1", "resolution_exact=0", "resolved to"},
 		{"nonempty target", "target_entries=0", "target_entries=1", "mount preimage"},
 		{"owner", "stage=complete owner=1", "stage=complete owner=0", "complete stage"},
 		{"partial", "final=1 partial=0", "final=1 partial=1", "complete stage"},
@@ -125,11 +126,22 @@ func TestSystemOSCryptexPreflightBindsProductResolutionAndOwnedStage(t *testing.
 			}
 		})
 	}
+	unresolvedBody := string(systemOSPreflightFixture("absent"))
+	unresolvedBody = strings.Replace(unresolvedBody,
+		"physical="+systemOSCryptexProductMount+" resolution_exact=1 target_entries=0",
+		"physical=unavailable resolution_exact=0 target_entries=-1", 1)
+	unresolved, err := parseSystemOSPreflight([]byte(unresolvedBody))
+	if err == nil || unresolved.Physical != "unavailable" ||
+		unresolved.ResolutionExact || !strings.Contains(err.Error(), "resolved to") {
+		t.Fatalf("unresolved Product path result=%+v err=%v", unresolved, err)
+	}
 	body := append(systemOSPreflightFixture("absent"), systemOSPreflightFixture("absent")...)
 	if _, err := parseSystemOSPreflight(body); err == nil || !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("duplicate preflight marker was not rejected: %v", err)
 	}
 	if script := systemOSPreflightScript(); !strings.Contains(script, "cd -P") ||
+		!strings.Contains(script, "physical=unavailable") ||
+		!strings.Contains(script, "resolution_exact=%d") ||
 		!strings.Contains(script, systemOSCryptexVisibleRoot) ||
 		!strings.Contains(script, systemOSCryptexProductMount) ||
 		strings.Contains(script, "/mnt/iphone/preboot/Cryptexes/OS\" && pwd") {

@@ -53,11 +53,15 @@ type systemOSCryptexEvidence struct {
 	TargetImage             string   `json:"target_image"`
 	ProductMountpoint       string   `json:"product_mountpoint"`
 	ProductVisibleRoot      string   `json:"product_visible_root"`
+	ProductResolution       string   `json:"product_resolution,omitempty"`
+	ProductResolutionExact  bool     `json:"product_resolution_exact"`
+	PreflightPassed         bool     `json:"preflight_passed"`
 	PrebootMountSource      string   `json:"preboot_mount_source,omitempty"`
 	PrebootPreimageReadOnly bool     `json:"preboot_preimage_read_only"`
 	AvailableBytes          uint64   `json:"available_bytes,omitempty"`
 	StagePreimage           string   `json:"stage_preimage,omitempty"`
 	StageReused             bool     `json:"stage_reused"`
+	StageWriteStarted       bool     `json:"stage_write_started"`
 	TransferredBytes        int64    `json:"transferred_bytes,omitempty"`
 	TargetImageVerified     bool     `json:"target_image_verified"`
 	OwnedDevices            []string `json:"owned_devices,omitempty"`
@@ -229,8 +233,10 @@ func requireSystemOSMountAbsent(body, target string) error {
 }
 
 type systemOSPreflight struct {
-	Stage  string
-	Mounts string
+	Physical        string
+	ResolutionExact bool
+	Stage           string
+	Mounts          string
 }
 
 func parseKeyValueLine(line, prefix string) (map[string]string, error) {
@@ -265,7 +271,13 @@ func parseSystemOSPreflight(body []byte) (systemOSPreflight, error) {
 	if err != nil {
 		return result, err
 	}
-	if fields["physical"] != systemOSCryptexProductMount || fields["target_entries"] != "0" {
+	result.Physical = fields["physical"]
+	result.ResolutionExact = fields["resolution_exact"] == "1"
+	if result.Physical != systemOSCryptexProductMount || !result.ResolutionExact {
+		return result, fmt.Errorf("Product cryptex path resolved to %q, want %q",
+			result.Physical, systemOSCryptexProductMount)
+	}
+	if fields["target_entries"] != "0" {
 		return result, fmt.Errorf("Product-resolved cryptex mount preimage changed: %v", fields)
 	}
 	switch fields["stage"] {
@@ -298,21 +310,22 @@ func parseSystemOSPreflight(body []byte) (systemOSPreflight, error) {
 }
 
 func systemOSPreflightScript() string {
-	return "set -eu; " +
-		"physical=$(cd -P " + shellQuote(systemOSCryptexVisibleRoot) + " && pwd -P); " +
-		"test \"$physical\" = " + shellQuote(systemOSCryptexProductMount) + "; " +
-		"shopt -s nullglob dotglob; target_entries=(" + shellQuote(systemOSCryptexProductMount) + "/*); " +
+	return "set -u; " +
+		"physical=unavailable; resolution_exact=0; target_entry_count=-1; shopt -s nullglob dotglob; " +
+		"if resolved=$(cd -P " + shellQuote(systemOSCryptexVisibleRoot) + " 2>/dev/null && pwd -P); then " +
+		"physical=$resolved; target_entries=(" + shellQuote(systemOSCryptexVisibleRoot) + "/*); target_entry_count=${#target_entries[@]}; " +
+		"test \"$physical\" = " + shellQuote(systemOSCryptexProductMount) + " && resolution_exact=1 || true; fi; " +
 		"stage=absent; owner=0; final=0; partial=0; stage_entries=0; " +
-		"if test -e " + shellQuote(systemOSCryptexOwnedDirectory) + "; then " +
-		"test -d " + shellQuote(systemOSCryptexOwnedDirectory) + "; stage_files=(" + shellQuote(systemOSCryptexOwnedDirectory) + "/*); stage_entries=${#stage_files[@]}; " +
+		"if test -e " + shellQuote(systemOSCryptexOwnedDirectory) + "; then if test -d " + shellQuote(systemOSCryptexOwnedDirectory) + "; then " +
+		"stage_files=(" + shellQuote(systemOSCryptexOwnedDirectory) + "/*); stage_entries=${#stage_files[@]}; " +
 		"test -f " + shellQuote(systemOSCryptexOwnerPath) + " && test \"$(<" + shellQuote(systemOSCryptexOwnerPath) + ")\" = " + shellQuote(systemOSCryptexOwnerMarker) + " && owner=1; " +
 		"test -f " + shellQuote(systemOSCryptexTargetImage) + " && final=1; test -f " + shellQuote(systemOSCryptexPartialImage) + " && partial=1; " +
 		"valid=1; for entry in \"${stage_files[@]}\"; do case \"$entry\" in " +
 		shellQuote(systemOSCryptexOwnerPath) + "|" + shellQuote(systemOSCryptexTargetImage) + "|" + shellQuote(systemOSCryptexPartialImage) + ") ;; *) valid=0 ;; esac; done; " +
 		"if test $valid -eq 1 && test $owner -eq 1 && test $final -eq 1 && test $partial -eq 0; then stage=complete; " +
-		"elif test $valid -eq 1 && test $owner -eq 1 && test $final -eq 0; then stage=incomplete; else stage=invalid; fi; fi; " +
-		"printf 'SYSTEMOS_CRYPTEX_PREFLIGHT physical=%s target_entries=%d stage=%s owner=%d final=%d partial=%d stage_entries=%d\\n' \"$physical\" \"${#target_entries[@]}\" \"$stage\" \"$owner\" \"$final\" \"$partial\" \"$stage_entries\"; " +
-		"printf 'SYSTEMOS_MOUNTS_BEGIN\\n'; /sbin/mount; printf 'SYSTEMOS_MOUNTS_END\\n'"
+		"elif test $valid -eq 1 && test $owner -eq 1 && test $final -eq 0; then stage=incomplete; else stage=invalid; fi; else stage=invalid; fi; fi; " +
+		"printf 'SYSTEMOS_CRYPTEX_PREFLIGHT physical=%s resolution_exact=%d target_entries=%d stage=%s owner=%d final=%d partial=%d stage_entries=%d\\n' \"$physical\" \"$resolution_exact\" \"$target_entry_count\" \"$stage\" \"$owner\" \"$final\" \"$partial\" \"$stage_entries\"; " +
+		"printf 'SYSTEMOS_MOUNTS_BEGIN\\n'; /sbin/mount || true; printf 'SYSTEMOS_MOUNTS_END\\n'"
 }
 
 type systemOSVerifierResult struct {
@@ -650,6 +663,7 @@ func (session *systemOSCryptexSession) createAndStreamStage() error {
 	if err := session.remountPreboot(false); err != nil {
 		return err
 	}
+	session.runtime.Evidence.StageWriteStarted = true
 	session.stagingMayExist = true
 	script := "set -eu; test ! -e " + shellQuote(systemOSCryptexOwnedDirectory) +
 		"; test -d /mnt/iphone/preboot/Cryptexes; /bin/mkdir " + shellQuote(systemOSCryptexOwnedDirectory) +
@@ -852,8 +866,22 @@ func (session *systemOSCryptexSession) cleanup() (cleanupErr error) {
 	}
 	if mounts, err := session.mountTable(); err != nil {
 		cleanupErr = errors.Join(cleanupErr, err)
-	} else if err = requireSystemOSMountAbsent(mounts, systemOSCryptexProductMount); err != nil {
-		cleanupErr = errors.Join(cleanupErr, err)
+	} else {
+		if preboot, prebootErr := requireSystemOSMount(mounts,
+			systemOSCryptexPrebootMount, true); prebootErr != nil {
+			cleanupErr = errors.Join(cleanupErr, prebootErr)
+		} else {
+			session.runtime.Evidence.CleanupPrebootReadOnly = true
+			if session.prebootSource == "" {
+				session.prebootSource = preboot.Source
+				session.runtime.Evidence.PrebootMountSource = preboot.Source
+				session.runtime.Evidence.PrebootPreimageReadOnly = true
+			}
+		}
+		if absentErr := requireSystemOSMountAbsent(mounts,
+			systemOSCryptexProductMount); absentErr != nil {
+			cleanupErr = errors.Join(cleanupErr, absentErr)
+		}
 	}
 	session.runtime.Evidence.CleanupExact = cleanupErr == nil &&
 		(!session.runtime.Evidence.MountReadOnly || session.runtime.Evidence.CleanupUnmounted) &&
@@ -876,9 +904,12 @@ func stageAndMountSystemOSCryptex(ctx context.Context, c *cache, access sshAcces
 		return nil, fmt.Errorf("SystemOS cryptex preflight: %w: %s", err, stderr)
 	}
 	preflight, err := parseSystemOSPreflight(stdout)
+	runtime.Evidence.ProductResolution = preflight.Physical
+	runtime.Evidence.ProductResolutionExact = preflight.ResolutionExact
 	if err != nil {
 		return nil, err
 	}
+	runtime.Evidence.PreflightPassed = true
 	preboot, err := requireSystemOSMount(preflight.Mounts, systemOSCryptexPrebootMount, true)
 	if err != nil {
 		return nil, err
