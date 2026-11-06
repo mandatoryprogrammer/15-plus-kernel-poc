@@ -41,6 +41,12 @@ const (
 
 	systemOSCryptexRequiredFree = uint64(systemOSCryptexBytes) + (4 << 20)
 	systemOSCryptexProgressTick = 4 * time.Second
+
+	// hdik prints these exact truncated type tokens for the two-level APFS
+	// attachment observed on the pinned Restore root. Bind the fields without
+	// assigning undocumented semantic names to either device node.
+	systemOSHDIKSecondBaseType = "EF57347C-0000-11AA-AA11-0030654"
+	systemOSHDIKVolumeType     = "41504653-0000-11AA-AA11-0030654"
 )
 
 type systemOSCryptexPlan struct {
@@ -70,6 +76,7 @@ type systemOSCryptexEvidence struct {
 	TransferredBytes        int64    `json:"transferred_bytes,omitempty"`
 	TargetImageVerified     bool     `json:"target_image_verified"`
 	OwnedDevices            []string `json:"owned_devices,omitempty"`
+	AttachedDevices         []string `json:"attached_devices,omitempty"`
 	MountedDevice           string   `json:"mounted_device,omitempty"`
 	MountReadOnly           bool     `json:"mount_read_only"`
 	MountNoBrowse           bool     `json:"mount_nobrowse"`
@@ -579,40 +586,109 @@ func parseSystemOSDeviceInventory(body []byte) (map[string]bool, error) {
 	return result, nil
 }
 
-var systemOSHDIKDeviceLine = regexp.MustCompile(`(?m)^(/dev/disk([0-9]+)(?:s[0-9]+)*)\b`)
+var (
+	systemOSHDIKDeviceLine = regexp.MustCompile(`(?m)^(/dev/disk([0-9]+)(?:s[0-9]+)*)\b`)
+	systemOSHDIKDevicePath = regexp.MustCompile(`^(/dev/disk([0-9]+))(?:s[0-9]+)*$`)
+)
 
-func parseSystemOSHDIKOutput(body []byte, preimage map[string]bool) (ownedBases, candidates []string, err error) {
-	baseSet, candidateSet := make(map[string]bool), make(map[string]bool)
-	for _, match := range systemOSHDIKDeviceLine.FindAllSubmatch(body, -1) {
-		path := string(match[1])
-		base := "/dev/disk" + string(match[2])
-		if preimage[base] {
-			return nil, nil, fmt.Errorf("hdik returned pre-existing device %s", base)
+type systemOSHDIKRecord struct {
+	Path       string
+	Base       string
+	BaseNumber int
+	Type       string
+}
+
+func parseSystemOSHDIKRecords(body []byte) ([]systemOSHDIKRecord, error) {
+	var records []systemOSHDIKRecord
+	seen := make(map[string]bool)
+	for _, line := range strings.Split(strings.ReplaceAll(string(body), "\r", ""), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || !strings.HasPrefix(fields[0], "/dev/disk") {
+			continue
 		}
-		baseSet[base] = true
-		if path != base {
-			candidateSet[path] = true
+		if len(fields) > 2 {
+			return nil, fmt.Errorf("hdik device line has %d fields: %q", len(fields), line)
 		}
-	}
-	if len(baseSet) != 1 {
-		return nil, nil, fmt.Errorf("hdik returned %d newly owned base devices", len(baseSet))
-	}
-	for base := range baseSet {
-		ownedBases = append(ownedBases, base)
-		if len(candidateSet) == 0 {
-			candidateSet[base] = true
+		match := systemOSHDIKDevicePath.FindStringSubmatch(fields[0])
+		if match == nil || seen[fields[0]] {
+			return nil, fmt.Errorf("invalid or duplicate hdik device path %q", fields[0])
 		}
+		seen[fields[0]] = true
+		number, err := strconv.Atoi(match[2])
+		if err != nil {
+			return nil, fmt.Errorf("parse hdik device number %q: %w", match[2], err)
+		}
+		record := systemOSHDIKRecord{Path: fields[0], Base: match[1], BaseNumber: number}
+		if len(fields) == 2 {
+			record.Type = fields[1]
+		}
+		records = append(records, record)
 	}
-	for candidate := range candidateSet {
-		candidates = append(candidates, candidate)
-	}
+	return records, nil
+}
+
+func sortSystemOSHDIKCandidates(candidates []string) {
 	sort.Slice(candidates, func(i, j int) bool {
 		if len(candidates[i]) == len(candidates[j]) {
 			return candidates[i] < candidates[j]
 		}
 		return len(candidates[i]) > len(candidates[j])
 	})
-	return ownedBases, candidates, nil
+}
+
+func parseSystemOSHDIKOutput(body []byte, preimage map[string]bool) (ownedRoots, attachedBases, candidates []string, err error) {
+	records, err := parseSystemOSHDIKRecords(body)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	baseSet, candidateSet := make(map[string]bool), make(map[string]bool)
+	for _, record := range records {
+		if preimage[record.Base] {
+			return nil, nil, nil, fmt.Errorf("hdik returned pre-existing device %s", record.Base)
+		}
+		baseSet[record.Base] = true
+		if record.Path != record.Base {
+			candidateSet[record.Path] = true
+		}
+	}
+	if len(baseSet) == 1 {
+		for base := range baseSet {
+			ownedRoots = []string{base}
+			attachedBases = []string{base}
+			if len(candidateSet) == 0 {
+				candidateSet[base] = true
+			}
+		}
+		for candidate := range candidateSet {
+			candidates = append(candidates, candidate)
+		}
+		sortSystemOSHDIKCandidates(candidates)
+		return ownedRoots, attachedBases, candidates, nil
+	}
+	if len(baseSet) != 2 {
+		return nil, nil, nil, fmt.Errorf("hdik returned %d newly attached base devices", len(baseSet))
+	}
+	if len(records) != 3 {
+		return nil, nil, nil, fmt.Errorf("hdik two-base topology has %d records, want 3", len(records))
+	}
+	root, second, volume := records[0], records[1], records[2]
+	if root.Path != root.Base || root.Type != "" {
+		return nil, nil, nil, fmt.Errorf("hdik two-base root record changed: %+v", root)
+	}
+	if second.Path != second.Base || second.Type != systemOSHDIKSecondBaseType {
+		return nil, nil, nil, fmt.Errorf("hdik two-base second record changed: %+v", second)
+	}
+	if second.BaseNumber != root.BaseNumber+1 {
+		return nil, nil, nil, fmt.Errorf("hdik two-base allocation is not consecutive: root=%s second=%s", root.Base, second.Base)
+	}
+	if volume.Path != second.Base+"s1" || volume.Type != systemOSHDIKVolumeType {
+		return nil, nil, nil, fmt.Errorf("hdik two-base volume record changed: %+v", volume)
+	}
+	ownedRoots = []string{root.Base}
+	attachedBases = []string{root.Base, second.Base}
+	sort.Strings(attachedBases)
+	candidates = []string{volume.Path}
+	return ownedRoots, attachedBases, candidates, nil
 }
 
 func detectedSystemOSHDIKBases(body []byte, preimage map[string]bool) []string {
@@ -631,6 +707,18 @@ func detectedSystemOSHDIKBases(body []byte, preimage map[string]bool) []string {
 	return result
 }
 
+func sameSystemOSDevices(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
 type systemOSCryptexSession struct {
 	ctx              context.Context
 	c                *cache
@@ -642,6 +730,7 @@ type systemOSCryptexSession struct {
 	stageComplete    bool
 	mounted          bool
 	ownedBases       []string
+	attachedBases    []string
 	mountedDevice    string
 	cleanupAttempted bool
 }
@@ -869,23 +958,28 @@ func (session *systemOSCryptexSession) attachAndMount() error {
 		session.ownedBases = append(session.ownedBases, device)
 	}
 	sort.Strings(session.ownedBases)
+	session.attachedBases = append([]string(nil), session.ownedBases...)
 	session.runtime.Evidence.OwnedDevices = append([]string(nil), session.ownedBases...)
+	session.runtime.Evidence.AttachedDevices = append([]string(nil), session.attachedBases...)
 	if postErr != nil {
 		return fmt.Errorf("read device postimage: %w: %s", postErr, postStderr)
 	}
 	if attachErr != nil {
 		return fmt.Errorf("attach SystemOS cryptex: %w: %s", attachErr, stderr)
 	}
-	parsedOwned, candidates, parseErr := parseSystemOSHDIKOutput(combined, preimage)
+	parsedOwned, parsedAttached, candidates, parseErr := parseSystemOSHDIKOutput(combined, preimage)
 	if parseErr != nil {
 		return parseErr
 	}
-	if len(newlyPresent) != len(parsedOwned) || len(parsedOwned) != 1 ||
-		newlyPresent[0] != parsedOwned[0] || len(session.ownedBases) != 1 ||
-		session.ownedBases[0] != parsedOwned[0] {
-		return fmt.Errorf("hdik device postimage=%v, parsed=%v, cleanup-owned=%v",
-			newlyPresent, parsedOwned, session.ownedBases)
+	if len(parsedOwned) != 1 || !sameSystemOSDevices(newlyPresent, parsedAttached) ||
+		!sameSystemOSDevices(session.ownedBases, parsedAttached) {
+		return fmt.Errorf("hdik device postimage=%v, parsed-attached=%v, emergency-owned=%v, parsed-roots=%v",
+			newlyPresent, parsedAttached, session.ownedBases, parsedOwned)
 	}
+	session.ownedBases = append([]string(nil), parsedOwned...)
+	session.attachedBases = append([]string(nil), parsedAttached...)
+	session.runtime.Evidence.OwnedDevices = append([]string(nil), session.ownedBases...)
+	session.runtime.Evidence.AttachedDevices = append([]string(nil), session.attachedBases...)
 	var failures []string
 	for _, candidate := range candidates {
 		_, mountStderr, mountErr := runSystemOSCapture(session.ctx, session.c, session.access,
@@ -931,7 +1025,7 @@ func (session *systemOSCryptexSession) waitOwnedDevicesAbsent() error {
 			return err
 		}
 		remaining := ""
-		for _, device := range session.ownedBases {
+		for _, device := range session.attachedBases {
 			if inventory[device] {
 				remaining = device
 				break
@@ -951,7 +1045,7 @@ func (session *systemOSCryptexSession) waitOwnedDevicesAbsent() error {
 		case <-timer.C:
 		}
 	}
-	return fmt.Errorf("owned devices remain after eject: %v", session.ownedBases)
+	return fmt.Errorf("attached devices remain after root eject: %v", session.attachedBases)
 }
 
 func (session *systemOSCryptexSession) cleanup() (cleanupErr error) {

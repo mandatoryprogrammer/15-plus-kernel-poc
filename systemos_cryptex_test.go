@@ -413,21 +413,70 @@ func TestSystemOSCryptexHDIKOwnershipContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := []byte("/dev/disk12              GUID_partition_scheme\n/dev/disk12s1            Apple_APFS\n")
-	owned, candidates, err := parseSystemOSHDIKOutput(output, preimage)
-	if err != nil || !reflect.DeepEqual(owned, []string{"/dev/disk12"}) || !reflect.DeepEqual(candidates, []string{"/dev/disk12s1"}) {
-		t.Fatalf("owned=%v candidates=%v err=%v", owned, candidates, err)
+	owned, attached, candidates, err := parseSystemOSHDIKOutput(output, preimage)
+	if err != nil || !reflect.DeepEqual(owned, []string{"/dev/disk12"}) ||
+		!reflect.DeepEqual(attached, []string{"/dev/disk12"}) ||
+		!reflect.DeepEqual(candidates, []string{"/dev/disk12s1"}) {
+		t.Fatalf("owned=%v attached=%v candidates=%v err=%v", owned, attached, candidates, err)
 	}
-	if _, _, err = parseSystemOSHDIKOutput([]byte("/dev/disk3\n/dev/disk3s1\n"), preimage); err == nil || !strings.Contains(err.Error(), "pre-existing") {
+	if _, _, _, err = parseSystemOSHDIKOutput([]byte("/dev/disk3\n/dev/disk3s1\n"), preimage); err == nil || !strings.Contains(err.Error(), "pre-existing") {
 		t.Fatalf("pre-existing hdik device accepted: %v", err)
 	}
-	if _, _, err = parseSystemOSHDIKOutput([]byte("/dev/disk12\n/dev/disk13\n"), preimage); err == nil || !strings.Contains(err.Error(), "2 newly") {
+	if _, _, _, err = parseSystemOSHDIKOutput([]byte("/dev/disk12\n/dev/disk13\n"), preimage); err == nil || !strings.Contains(err.Error(), "two-base topology has 2 records") {
 		t.Fatalf("ambiguous hdik devices accepted: %v", err)
 	}
-	if _, _, err = parseSystemOSHDIKOutput([]byte("noise only\n"), preimage); err == nil || !strings.Contains(err.Error(), "0 newly") {
+	if _, _, _, err = parseSystemOSHDIKOutput([]byte("noise only\n"), preimage); err == nil || !strings.Contains(err.Error(), "0 newly attached") {
 		t.Fatalf("empty hdik ownership accepted: %v", err)
 	}
 	if _, err = parseSystemOSDeviceInventory([]byte("/dev/disk2\n/dev/disk2\n")); err == nil || !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("duplicate device inventory accepted: %v", err)
+	}
+}
+
+func TestSystemOSCryptexHDIKObservedTwoBaseTopology(t *testing.T) {
+	preimage, err := parseSystemOSDeviceInventory([]byte("/dev/disk2\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed := "/dev/disk3          \t                               \t\r\n" +
+		"/dev/disk4          \t" + systemOSHDIKSecondBaseType + "\t\r\n" +
+		"/dev/disk4s1        \t" + systemOSHDIKVolumeType + "\t\r\n"
+	owned, attached, candidates, err := parseSystemOSHDIKOutput([]byte(observed), preimage)
+	if err != nil || !reflect.DeepEqual(owned, []string{"/dev/disk3"}) ||
+		!reflect.DeepEqual(attached, []string{"/dev/disk3", "/dev/disk4"}) ||
+		!reflect.DeepEqual(candidates, []string{"/dev/disk4s1"}) {
+		t.Fatalf("owned=%v attached=%v candidates=%v err=%v", owned, attached, candidates, err)
+	}
+
+	for _, mutation := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{"root type", strings.Replace(observed, "/dev/disk3          \t                               \t", "/dev/disk3 ROOT", 1), "root record changed"},
+		{"second type", strings.Replace(observed, systemOSHDIKSecondBaseType, "EF57347C-0000-11AA-AA11-0030655", 1), "second record changed"},
+		{"volume type", strings.Replace(observed, systemOSHDIKVolumeType, "41504653-0000-11AA-AA11-0030655", 1), "volume record changed"},
+		{"nonconsecutive", strings.NewReplacer("/dev/disk4s1", "/dev/disk5s1", "/dev/disk4", "/dev/disk5").Replace(observed), "not consecutive"},
+		{"wrong partition", strings.Replace(observed, "/dev/disk4s1", "/dev/disk4s2", 1), "volume record changed"},
+		{"extra base", observed + "/dev/disk6\n", "3 newly attached"},
+		{"missing volume", strings.Replace(observed, "/dev/disk4s1        \t"+systemOSHDIKVolumeType+"\t\r\n", "", 1), "two-base topology has 2 records"},
+		{"duplicate path", observed + "/dev/disk4s1 " + systemOSHDIKVolumeType + "\n", "duplicate hdik device path"},
+	} {
+		t.Run(mutation.name, func(t *testing.T) {
+			_, _, _, gotErr := parseSystemOSHDIKOutput([]byte(mutation.body), preimage)
+			if gotErr == nil || !strings.Contains(gotErr.Error(), mutation.want) {
+				t.Fatalf("site-specific topology mutation err=%v want=%q", gotErr, mutation.want)
+			}
+		})
+	}
+
+	preexistingSecond, err := parseSystemOSDeviceInventory([]byte("/dev/disk2\n/dev/disk4\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err = parseSystemOSHDIKOutput([]byte(observed), preexistingSecond); err == nil ||
+		!strings.Contains(err.Error(), "pre-existing device /dev/disk4") {
+		t.Fatalf("pre-existing second base accepted: %v", err)
 	}
 }
 
