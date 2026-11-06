@@ -320,7 +320,7 @@ func newServiceChainReport(manifestPath, manifestHash string,
 }
 
 func runServiceChain(ctx context.Context, c *cache, manifestPath string,
-	nativeExecutable *[2]string, systemOSCryptexPath string,
+	nativeExecutable *[2]string, systemOSCryptexPath, systemOSCryptexTrustPath string,
 	programArguments []string) (runErr error) {
 	manifest, manifestHash, err := loadServiceChainManifest(manifestPath)
 	if err != nil {
@@ -348,6 +348,17 @@ func runServiceChain(ctx context.Context, c *cache, manifestPath string,
 	report := newServiceChainReport(manifestPath, manifestHash, manifest,
 		programArguments, *profile.Program, executionTimeout, nativeExecutable)
 	var cryptexRuntime *systemOSCryptexRuntime
+	var cryptexTrustPlan *systemOSCryptexTrustPlan
+	if systemOSCryptexTrustPath != "" {
+		if systemOSCryptexPath == "" {
+			return errors.New("--systemos-cryptex-trust-cache requires --systemos-cryptex")
+		}
+		plan, prepareErr := prepareSystemOSCryptexTrustCache(systemOSCryptexTrustPath, c.out)
+		if prepareErr != nil {
+			return prepareErr
+		}
+		cryptexTrustPlan = &plan
+	}
 	if systemOSCryptexPath != "" {
 		plan, prepareErr := prepareSystemOSCryptex(systemOSCryptexPath, c.out)
 		if prepareErr != nil {
@@ -359,7 +370,15 @@ func runServiceChain(ctx context.Context, c *cache, manifestPath string,
 			ProductMountpoint:  systemOSCryptexProductMount,
 			ProductVisibleRoot: systemOSCryptexVisibleRoot,
 		}
-		cryptexRuntime = &systemOSCryptexRuntime{Plan: plan, Evidence: evidence}
+		if cryptexTrustPlan != nil {
+			evidence.TrustCacheSource = cryptexTrustPlan.Source
+			evidence.TrustCacheBytes = cryptexTrustPlan.Bytes
+			evidence.TrustCacheSHA256 = cryptexTrustPlan.SHA256
+			evidence.TrustCacheImageType = systemOSCryptexTrustType
+			evidence.TrustCacheVersion = cryptexTrustPlan.Version
+			evidence.TrustCacheEntryCount = cryptexTrustPlan.EntryCount
+		}
+		cryptexRuntime = &systemOSCryptexRuntime{Plan: plan, TrustCache: cryptexTrustPlan, Evidence: evidence}
 		report.SystemOSCryptex = evidence
 	}
 	if err = writePrivateJSON(c, "service-chain-run", report); err != nil {
@@ -441,7 +460,7 @@ func serviceChainCommand(ctx context.Context, c *cache, args []string) error {
 		return nil
 	}
 	if len(args) >= 2 && args[0] == "run" {
-		manifestPath, nativeExecutable, systemOSCryptexPath, programArguments, err := parseServiceChainRunArguments(args[1:])
+		manifestPath, nativeExecutable, systemOSCryptexPath, systemOSCryptexTrustPath, programArguments, err := parseServiceChainRunArguments(args[1:])
 		if err != nil {
 			return err
 		}
@@ -449,24 +468,25 @@ func serviceChainCommand(ctx context.Context, c *cache, args []string) error {
 			manifestPath = filepath.Join(filepath.Dir(c.root), "examples", "productos-display-chain.json")
 		}
 		return runServiceChain(ctx, c, manifestPath, nativeExecutable,
-			systemOSCryptexPath, programArguments)
+			systemOSCryptexPath, systemOSCryptexTrustPath, programArguments)
 	}
-	return errors.New("usage: service-chain validate MANIFEST | service-chain run MANIFEST|default [--preserve-native FILE=DEST] [--systemos-cryptex IMAGE] [-- PROGRAM-ARG...]")
+	return errors.New("usage: service-chain validate MANIFEST | service-chain run MANIFEST|default [--preserve-native FILE=DEST] [--systemos-cryptex IMAGE --systemos-cryptex-trust-cache FILE] [-- PROGRAM-ARG...]")
 }
 
 func parseServiceChainRunArguments(args []string) (manifestPath string,
-	nativeExecutable *[2]string, systemOSCryptexPath string,
+	nativeExecutable *[2]string, systemOSCryptexPath, systemOSCryptexTrustPath string,
 	programArguments []string, err error) {
 	if len(args) == 0 {
-		err = errors.New("usage: service-chain run MANIFEST|default [--preserve-native FILE=DEST] [--systemos-cryptex IMAGE] [-- PROGRAM-ARG...]")
+		err = errors.New("usage: service-chain run MANIFEST|default [--preserve-native FILE=DEST] [--systemos-cryptex IMAGE --systemos-cryptex-trust-cache FILE] [-- PROGRAM-ARG...]")
 		return
 	}
 	manifestPath = args[0]
+parseOptions:
 	for index := 1; index < len(args); index++ {
 		switch args[index] {
 		case "--":
 			programArguments = append([]string{}, args[index+1:]...)
-			return
+			break parseOptions
 		case "--preserve-native":
 			if nativeExecutable != nil || index+1 >= len(args) {
 				err = errors.New("service-chain run accepts exactly one --preserve-native FILE=DEST")
@@ -490,10 +510,24 @@ func parseServiceChainRunArguments(args []string) (manifestPath string,
 				return
 			}
 			systemOSCryptexPath = args[index]
+		case "--systemos-cryptex-trust-cache":
+			if systemOSCryptexTrustPath != "" || index+1 >= len(args) {
+				err = errors.New("service-chain run accepts exactly one --systemos-cryptex-trust-cache FILE")
+				return
+			}
+			index++
+			if args[index] == "" {
+				err = errors.New("--systemos-cryptex-trust-cache needs a nonempty path")
+				return
+			}
+			systemOSCryptexTrustPath = args[index]
 		default:
 			err = fmt.Errorf("unknown service-chain run option %q; put target arguments after --", args[index])
 			return
 		}
+	}
+	if systemOSCryptexTrustPath != "" && systemOSCryptexPath == "" {
+		err = errors.New("--systemos-cryptex-trust-cache requires --systemos-cryptex")
 	}
 	return
 }

@@ -173,16 +173,31 @@ func prepareRuntime(ctx context.Context, c *cache) (map[string][]byte, runtimeLa
 	}
 	// Caller payloads are admitted by the structural CS_ADHOC|
 	// CS_LINKER_SIGNED kernel gate and transferred after SSH is available. A
-	// configured complete system context and legacy non-cache trust-only rows
-	// alter the volatile boot trust cache and its iBEC digest binding.
+	// configured complete system context, transient complete cryptex context,
+	// and legacy non-cache trust-only rows alter the volatile boot trust cache
+	// and its iBEC digest binding.
 	admissions := trustPayloadEntries(bootTrustAdditions(trustAdditions))
 	_, systemTrust, err := loadSystemTrustContext(ctx, c)
 	if err != nil {
 		return nil, runtimeLayout{}, err
 	}
-	layout, err := preparePayloadTrust(images, admissions, systemTrust)
+	var cryptexTrust []byte
+	cryptexRuntime := systemOSCryptexFromContext(ctx)
+	if cryptexRuntime != nil && cryptexRuntime.TrustCache != nil {
+		if err = validateSystemOSCryptexTrustPlan(cryptexRuntime.TrustCache); err != nil {
+			return nil, runtimeLayout{}, fmt.Errorf("validate SystemOS cryptex trust-cache plan: %w", err)
+		}
+		if cryptexRuntime.Evidence == nil {
+			return nil, runtimeLayout{}, errors.New("SystemOS cryptex trust-cache context has no evidence owner")
+		}
+		cryptexTrust = cryptexRuntime.TrustCache.IM4P
+	}
+	layout, err := preparePayloadTrust(images, admissions, systemTrust, cryptexTrust)
 	if err != nil {
 		return nil, runtimeLayout{}, fmt.Errorf("prepare payload admission: %w", err)
+	}
+	if len(cryptexTrust) != 0 {
+		cryptexRuntime.Evidence.TrustCacheBootMerged = true
 	}
 	return images, layout, nil
 }
@@ -532,7 +547,7 @@ func bootLocked(ctx context.Context, c *cache, terminal bool, command []string) 
 	if err = preparePayloadDestinations(ctx, c, serial, additions); err != nil {
 		return err
 	}
-	admissionFingerprint, err := payloadAdmissionFingerprint(c)
+	admissionFingerprint, err := payloadAdmissionFingerprint(ctx, c)
 	if err != nil {
 		return err
 	}

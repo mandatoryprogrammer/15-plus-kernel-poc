@@ -20,8 +20,13 @@ import (
 )
 
 const (
-	systemOSCryptexBytes  int64 = 1926136882
-	systemOSCryptexSHA256       = "6534bd9d9860ea0f4b8dc63431b5d2f73a7d925226b70335f917bd94a1162118"
+	systemOSCryptexBytes        int64 = 1926136882
+	systemOSCryptexSHA256             = "6534bd9d9860ea0f4b8dc63431b5d2f73a7d925226b70335f917bd94a1162118"
+	systemOSCryptexTrustBytes         = int64(2735)
+	systemOSCryptexTrustSHA256        = "7d8a379bf48e618723bf4ccd2fc62e105076d15e96ab8722f4148e24a52d5e34"
+	systemOSCryptexTrustType          = "trcs"
+	systemOSCryptexTrustVersion       = uint32(2)
+	systemOSCryptexTrustEntries       = 112
 
 	systemOSCryptexOwnedDirectory = "/mnt/iphone/preboot/Cryptexes/CodexSystemOS"
 	systemOSCryptexOwnerPath      = systemOSCryptexOwnedDirectory + "/.15-plus-kernel-poc-owner"
@@ -55,10 +60,26 @@ type systemOSCryptexPlan struct {
 	SHA256 string
 }
 
+type systemOSCryptexTrustPlan struct {
+	Source     string
+	Bytes      int64
+	SHA256     string
+	IM4P       []byte
+	Version    uint32
+	EntryCount int
+}
+
 type systemOSCryptexEvidence struct {
 	Source                  string   `json:"source"`
 	Bytes                   int64    `json:"bytes"`
 	SHA256                  string   `json:"sha256"`
+	TrustCacheSource        string   `json:"trust_cache_source,omitempty"`
+	TrustCacheBytes         int64    `json:"trust_cache_bytes,omitempty"`
+	TrustCacheSHA256        string   `json:"trust_cache_sha256,omitempty"`
+	TrustCacheImageType     string   `json:"trust_cache_image_type,omitempty"`
+	TrustCacheVersion       uint32   `json:"trust_cache_version,omitempty"`
+	TrustCacheEntryCount    int      `json:"trust_cache_entry_count,omitempty"`
+	TrustCacheBootMerged    bool     `json:"trust_cache_boot_merged"`
 	TargetImage             string   `json:"target_image"`
 	ProductMountpoint       string   `json:"product_mountpoint"`
 	ProductVisibleRoot      string   `json:"product_visible_root"`
@@ -92,8 +113,9 @@ type systemOSCryptexEvidence struct {
 }
 
 type systemOSCryptexRuntime struct {
-	Plan     systemOSCryptexPlan
-	Evidence *systemOSCryptexEvidence
+	Plan       systemOSCryptexPlan
+	TrustCache *systemOSCryptexTrustPlan
+	Evidence   *systemOSCryptexEvidence
 }
 
 type systemOSCryptexContextKey struct{}
@@ -113,6 +135,102 @@ func validateSystemOSCryptexIdentity(size int64, sha string) error {
 	}
 	if sha != systemOSCryptexSHA256 {
 		return fmt.Errorf("SystemOS cryptex sha256=%s, want %s", sha, systemOSCryptexSHA256)
+	}
+	return nil
+}
+
+func validateSystemOSCryptexTrustIdentity(size int64, sha string) error {
+	if size != systemOSCryptexTrustBytes {
+		return fmt.Errorf("SystemOS cryptex trust-cache bytes=%d, want %d", size, systemOSCryptexTrustBytes)
+	}
+	if sha != systemOSCryptexTrustSHA256 {
+		return fmt.Errorf("SystemOS cryptex trust-cache sha256=%s, want %s", sha, systemOSCryptexTrustSHA256)
+	}
+	return nil
+}
+
+func validateSystemOSCryptexTrustSemantics(body []byte) (parsedTrustCache, error) {
+	parsed, err := parseTrustCacheImage(body, systemOSCryptexTrustType)
+	if err != nil {
+		return parsedTrustCache{}, fmt.Errorf("SystemOS cryptex trust-cache semantics: %w", err)
+	}
+	if parsed.version != systemOSCryptexTrustVersion {
+		return parsedTrustCache{}, fmt.Errorf("SystemOS cryptex trust-cache version=%d, want %d", parsed.version, systemOSCryptexTrustVersion)
+	}
+	if len(parsed.rows) != systemOSCryptexTrustEntries {
+		return parsedTrustCache{}, fmt.Errorf("SystemOS cryptex trust-cache entry count=%d, want %d", len(parsed.rows), systemOSCryptexTrustEntries)
+	}
+	return parsed, nil
+}
+
+func prepareSystemOSCryptexTrustCache(path string, out io.Writer) (systemOSCryptexTrustPlan, error) {
+	var plan systemOSCryptexTrustPlan
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return plan, err
+	}
+	info, err := os.Lstat(abs)
+	if err != nil {
+		return plan, err
+	}
+	if !info.Mode().IsRegular() {
+		return plan, errors.New("SystemOS cryptex trust-cache input must be one regular file, not a symlink")
+	}
+	file, err := os.Open(abs)
+	if err != nil {
+		return plan, err
+	}
+	body, readErr := io.ReadAll(io.LimitReader(file, systemOSCryptexTrustBytes+1))
+	closeErr := file.Close()
+	if readErr != nil {
+		return plan, readErr
+	}
+	if closeErr != nil {
+		return plan, closeErr
+	}
+	if int64(len(body)) != info.Size() {
+		return plan, errors.New("SystemOS cryptex trust-cache input changed while it was read")
+	}
+	hash := sha256.Sum256(body)
+	sha := hex.EncodeToString(hash[:])
+	if err = validateSystemOSCryptexTrustIdentity(int64(len(body)), sha); err != nil {
+		return plan, err
+	}
+	parsed, err := validateSystemOSCryptexTrustSemantics(body)
+	if err != nil {
+		return plan, err
+	}
+	plan = systemOSCryptexTrustPlan{
+		Source: abs, Bytes: int64(len(body)), SHA256: sha, IM4P: bytes.Clone(body),
+		Version: parsed.version, EntryCount: len(parsed.rows),
+	}
+	if out != nil {
+		fmt.Fprintf(out, "Validated exact SystemOS cryptex trust cache: %d bytes sha256=%s type=%s version=%d entries=%d\n",
+			plan.Bytes, plan.SHA256, systemOSCryptexTrustType, plan.Version, plan.EntryCount)
+	}
+	return plan, nil
+}
+
+func validateSystemOSCryptexTrustPlan(plan *systemOSCryptexTrustPlan) error {
+	if plan == nil {
+		return errors.New("missing SystemOS cryptex trust-cache plan")
+	}
+	if err := validateSystemOSCryptexTrustIdentity(plan.Bytes, plan.SHA256); err != nil {
+		return err
+	}
+	if int64(len(plan.IM4P)) != plan.Bytes {
+		return fmt.Errorf("SystemOS cryptex trust-cache plan bytes=%d, body has %d", plan.Bytes, len(plan.IM4P))
+	}
+	hash := sha256.Sum256(plan.IM4P)
+	if hex.EncodeToString(hash[:]) != plan.SHA256 {
+		return errors.New("SystemOS cryptex trust-cache plan body sha256 mismatch")
+	}
+	parsed, err := validateSystemOSCryptexTrustSemantics(plan.IM4P)
+	if err != nil {
+		return err
+	}
+	if plan.Version != parsed.version || plan.EntryCount != len(parsed.rows) {
+		return errors.New("SystemOS cryptex trust-cache plan metadata does not match its body")
 	}
 	return nil
 }

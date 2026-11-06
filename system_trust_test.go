@@ -63,6 +63,29 @@ func TestSystemTrustMergeUsesCompleteSortedTable(t *testing.T) {
 	}
 }
 
+func TestCryptexTrustMergeUsesCompleteSortedTable(t *testing.T) {
+	base := trustImageWithRows("rtsc", 2, completeTrustRow(2, 0x10), completeTrustRow(2, 0x30))
+	cryptex := trustImageWithRows("trcs", 2, completeTrustRow(2, 0x20), completeTrustRow(2, 0x30))
+	merged, count, err := mergeCryptexTrustCache(base, cryptex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := parseTrustCacheImage(merged, "rtsc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 || len(parsed.rows) != 3 || parsed.rows[0][0] != 0x10 || parsed.rows[1][0] != 0x20 || parsed.rows[2][0] != 0x30 {
+		t.Fatalf("merged cryptex rows changed: count=%d rows=%x", count, parsed.rows)
+	}
+	baseParsed, _ := parseTrustCacheImage(base, "rtsc")
+	if !bytes.Equal(parsed.header[:20], baseParsed.header[:20]) {
+		t.Fatal("base restore trust-cache header identity changed during cryptex merge")
+	}
+	if _, _, err = mergeCryptexTrustCache(base, trustImageWithRows("trst", 2, completeTrustRow(2, 0x20))); err == nil {
+		t.Fatal("system static table accepted as a cryptex trust cache")
+	}
+}
+
 func TestSystemTrustMergePromotesCompleteV1RowsToV2(t *testing.T) {
 	base := trustImageWithRows("rtsc", 1, completeTrustRow(1, 0x10), completeTrustRow(1, 0x30))
 	system := trustImageWithRows("trst", 2, completeTrustRow(2, 0x20))
@@ -123,7 +146,7 @@ func TestSystemTrustImportChangesOnlyContextFingerprint(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.out = io.Discard
-	before, err := payloadAdmissionFingerprint(c)
+	before, err := payloadAdmissionFingerprint(context.Background(), c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,14 +165,14 @@ func TestSystemTrustImportChangesOnlyContextFingerprint(t *testing.T) {
 	if value == nil || value.Object.SHA256 != digest(wrapper) || value.EntryCount != 1 || value.Version != 2 || len(im4p) == 0 {
 		t.Fatalf("imported context changed: value=%+v im4p=%d", value, len(im4p))
 	}
-	after, err := payloadAdmissionFingerprint(c)
+	after, err := payloadAdmissionFingerprint(context.Background(), c)
 	if err != nil || after == before {
 		t.Fatalf("system trust did not change admission fingerprint: before=%s after=%s err=%v", before, after, err)
 	}
 	if err = clearSystemTrustContext(c); err != nil {
 		t.Fatal(err)
 	}
-	cleared, err := payloadAdmissionFingerprint(c)
+	cleared, err := payloadAdmissionFingerprint(context.Background(), c)
 	if err != nil || cleared != before {
 		t.Fatalf("clear did not restore admission fingerprint: before=%s cleared=%s err=%v", before, cleared, err)
 	}

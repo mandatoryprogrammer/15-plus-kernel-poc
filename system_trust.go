@@ -70,16 +70,16 @@ func parseTrustCacheImage(im4p []byte, wantType string) (parsedTrustCache, error
 	return result, nil
 }
 
-func mergeSystemTrustCache(baseRestore, productStatic []byte) ([]byte, int, error) {
+func mergeCompleteTrustCache(baseRestore, complete []byte, completeType, completeName string) ([]byte, int, error) {
 	base, err := parseTrustCacheImage(baseRestore, "rtsc")
 	if err != nil {
 		return nil, 0, fmt.Errorf("base restore trust cache: %w", err)
 	}
-	system, err := parseTrustCacheImage(productStatic, "trst")
+	additional, err := parseTrustCacheImage(complete, completeType)
 	if err != nil {
-		return nil, 0, fmt.Errorf("system static trust cache: %w", err)
+		return nil, 0, fmt.Errorf("%s: %w", completeName, err)
 	}
-	if base.version == 1 && system.version == 2 {
+	if base.version == 1 && additional.version == 2 {
 		promoted := make([][]byte, 0, len(base.rows))
 		for _, row := range base.rows {
 			promoted = append(promoted, append(bytes.Clone(row), 0, 0))
@@ -88,11 +88,11 @@ func mergeSystemTrustCache(baseRestore, productStatic []byte) ([]byte, int, erro
 		base.rowSize = 24
 		base.rows = promoted
 		binary.LittleEndian.PutUint32(base.header[:4], 2)
-	} else if base.version != system.version || base.rowSize != system.rowSize {
-		return nil, 0, fmt.Errorf("trust-cache format mismatch: base version %d, system version %d", base.version, system.version)
+	} else if base.version != additional.version || base.rowSize != additional.rowSize {
+		return nil, 0, fmt.Errorf("trust-cache format mismatch: base version %d, complete version %d", base.version, additional.version)
 	}
-	rows := make(map[string][]byte, len(base.rows)+len(system.rows))
-	for _, table := range []parsedTrustCache{base, system} {
+	rows := make(map[string][]byte, len(base.rows)+len(additional.rows))
+	for _, table := range []parsedTrustCache{base, additional} {
 		for _, row := range table.rows {
 			key := string(row[:20])
 			if existing, ok := rows[key]; ok {
@@ -119,6 +119,14 @@ func mergeSystemTrustCache(baseRestore, productStatic []byte) ([]byte, int, erro
 		return nil, 0, err
 	}
 	return merged, len(ordered), nil
+}
+
+func mergeSystemTrustCache(baseRestore, productStatic []byte) ([]byte, int, error) {
+	return mergeCompleteTrustCache(baseRestore, productStatic, "trst", "system static trust cache")
+}
+
+func mergeCryptexTrustCache(baseRestore, cryptexTrust []byte) ([]byte, int, error) {
+	return mergeCompleteTrustCache(baseRestore, cryptexTrust, "trcs", "SystemOS cryptex trust cache")
 }
 
 func systemTrustDescriptorPath(c *cache) string {

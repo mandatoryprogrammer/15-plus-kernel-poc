@@ -64,17 +64,25 @@ func TestServiceChainManifestAndLauncherArguments(t *testing.T) {
 	}
 }
 
-func TestParseServiceChainRunArgumentsOwnsNativeStaging(t *testing.T) {
-	manifest, native, cryptex, program, err := parseServiceChainRunArguments([]string{
+func TestParseServiceChainRunArgumentsOwnsNativeAndCryptexStaging(t *testing.T) {
+	manifest, native, cryptex, cryptexTrust, program, err := parseServiceChainRunArguments([]string{
 		"default", "--preserve-native", "/host/Product-hidd=/usr/local/libexec/productos-hidd.nonui",
 		"--systemos-cryptex", "/host/LuckD23D127.D38SystemCryptex.ulfo.dmg",
+		"--systemos-cryptex-trust-cache", "/host/043-48734-152.dmg.aea.trustcache",
 		"--", "--hidd-bootstrap-boundary-v5",
 	})
 	if err != nil || manifest != "default" || native == nil ||
 		*native != [2]string{"/host/Product-hidd", "/usr/local/libexec/productos-hidd.nonui"} ||
 		cryptex != "/host/LuckD23D127.D38SystemCryptex.ulfo.dmg" ||
+		cryptexTrust != "/host/043-48734-152.dmg.aea.trustcache" ||
 		!reflect.DeepEqual(program, []string{"--hidd-bootstrap-boundary-v5"}) {
-		t.Fatalf("parsed service-chain run changed: manifest=%q native=%v cryptex=%q program=%q err=%v", manifest, native, cryptex, program, err)
+		t.Fatalf("parsed service-chain run changed: manifest=%q native=%v cryptex=%q trust=%q program=%q err=%v", manifest, native, cryptex, cryptexTrust, program, err)
+	}
+	_, _, _, cryptexTrust, _, err = parseServiceChainRunArguments([]string{
+		"default", "--systemos-cryptex", "/host/image",
+	})
+	if err != nil || cryptexTrust != "" {
+		t.Fatalf("legacy SystemOS cryptex option changed: trust=%q err=%v", cryptexTrust, err)
 	}
 	for _, args := range [][]string{
 		{},
@@ -83,9 +91,13 @@ func TestParseServiceChainRunArgumentsOwnsNativeStaging(t *testing.T) {
 		{"default", "--preserve-native", "one=/usr/local/libexec/one", "--preserve-native", "two=/usr/local/libexec/two"},
 		{"default", "--systemos-cryptex"},
 		{"default", "--systemos-cryptex", "one", "--systemos-cryptex", "two"},
+		{"default", "--systemos-cryptex-trust-cache"},
+		{"default", "--systemos-cryptex-trust-cache", ""},
+		{"default", "--systemos-cryptex-trust-cache", "/host/trust"},
+		{"default", "--systemos-cryptex", "/host/image", "--systemos-cryptex-trust-cache", "one", "--systemos-cryptex-trust-cache", "two"},
 		{"default", "target-argument-before-delimiter"},
 	} {
-		if _, _, _, _, err = parseServiceChainRunArguments(args); err == nil {
+		if _, _, _, _, _, err = parseServiceChainRunArguments(args); err == nil {
 			t.Fatalf("invalid service-chain run arguments accepted: %q", args)
 		}
 	}

@@ -72,6 +72,49 @@ func TestSystemOSCryptexExactIdentityIsSeparateFromPortableHashing(t *testing.T)
 	}
 }
 
+func TestSystemOSCryptexTrustIdentityAndSemanticsAreIndependent(t *testing.T) {
+	if err := validateSystemOSCryptexTrustIdentity(systemOSCryptexTrustBytes, systemOSCryptexTrustSHA256); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSystemOSCryptexTrustIdentity(systemOSCryptexTrustBytes-1, systemOSCryptexTrustSHA256); err == nil || !strings.Contains(err.Error(), "bytes") {
+		t.Fatalf("trust-cache size mutation did not reach size assertion: %v", err)
+	}
+	mutatedHash := "0" + systemOSCryptexTrustSHA256[1:]
+	if err := validateSystemOSCryptexTrustIdentity(systemOSCryptexTrustBytes, mutatedHash); err == nil || !strings.Contains(err.Error(), "sha256") {
+		t.Fatalf("trust-cache hash mutation did not reach hash assertion: %v", err)
+	}
+
+	fixture := func(kind string, version uint32, count int) []byte {
+		rows := make([][]byte, 0, count)
+		for index := 0; index < count; index++ {
+			rows = append(rows, completeTrustRow(version, byte(index)))
+		}
+		return trustImageWithRows(kind, version, rows...)
+	}
+	semanticFixture := fixture(systemOSCryptexTrustType, systemOSCryptexTrustVersion, systemOSCryptexTrustEntries)
+	parsed, err := validateSystemOSCryptexTrustSemantics(semanticFixture)
+	if err != nil || parsed.version != systemOSCryptexTrustVersion || len(parsed.rows) != systemOSCryptexTrustEntries {
+		t.Fatalf("portable trust-cache semantic fixture rejected: version=%d entries=%d err=%v", parsed.version, len(parsed.rows), err)
+	}
+	if _, err = validateSystemOSCryptexTrustSemantics(fixture("trst", systemOSCryptexTrustVersion, systemOSCryptexTrustEntries)); err == nil || !strings.Contains(err.Error(), "type") {
+		t.Fatalf("type mutation did not reach semantic type assertion: %v", err)
+	}
+	if _, err = validateSystemOSCryptexTrustSemantics(fixture(systemOSCryptexTrustType, 1, systemOSCryptexTrustEntries)); err == nil || !strings.Contains(err.Error(), "version") {
+		t.Fatalf("version mutation did not reach semantic version assertion: %v", err)
+	}
+	if _, err = validateSystemOSCryptexTrustSemantics(fixture(systemOSCryptexTrustType, systemOSCryptexTrustVersion, systemOSCryptexTrustEntries-1)); err == nil || !strings.Contains(err.Error(), "entry count") {
+		t.Fatalf("entry-count mutation did not reach semantic count assertion: %v", err)
+	}
+	unsortedRows := make([][]byte, 0, systemOSCryptexTrustEntries)
+	for index := 0; index < systemOSCryptexTrustEntries; index++ {
+		unsortedRows = append(unsortedRows, completeTrustRow(systemOSCryptexTrustVersion, byte(index)))
+	}
+	unsortedRows[0], unsortedRows[1] = unsortedRows[1], unsortedRows[0]
+	if _, err = validateSystemOSCryptexTrustSemantics(trustImageWithRows(systemOSCryptexTrustType, systemOSCryptexTrustVersion, unsortedRows...)); err == nil || !strings.Contains(err.Error(), "sorted") {
+		t.Fatalf("ordering mutation did not reach semantic row-order assertion: %v", err)
+	}
+}
+
 func TestSystemOSCryptexMountTableContract(t *testing.T) {
 	mount, err := requireSystemOSMount(systemOSMountFixture(false), systemOSCryptexPrebootMount, true)
 	if err != nil || mount.Source != "/dev/disk3s3" || !mount.Options["nobrowse"] {
@@ -482,12 +525,14 @@ func TestSystemOSCryptexHDIKObservedTwoBaseTopology(t *testing.T) {
 
 func TestSystemOSCryptexContextCarriesOneExactPlan(t *testing.T) {
 	evidence := &systemOSCryptexEvidence{Source: "/host/image", Bytes: systemOSCryptexBytes, SHA256: systemOSCryptexSHA256}
+	trust := &systemOSCryptexTrustPlan{Source: "/host/trust", Bytes: systemOSCryptexTrustBytes, SHA256: systemOSCryptexTrustSHA256}
 	runtime := &systemOSCryptexRuntime{
-		Plan:     systemOSCryptexPlan{Source: evidence.Source, Bytes: evidence.Bytes, SHA256: evidence.SHA256},
-		Evidence: evidence,
+		Plan:       systemOSCryptexPlan{Source: evidence.Source, Bytes: evidence.Bytes, SHA256: evidence.SHA256},
+		TrustCache: trust,
+		Evidence:   evidence,
 	}
 	ctx := withSystemOSCryptex(context.Background(), runtime)
-	if systemOSCryptexFromContext(ctx) != runtime || systemOSCryptexFromContext(context.Background()) != nil {
+	if systemOSCryptexFromContext(ctx) != runtime || systemOSCryptexFromContext(ctx).TrustCache != trust || systemOSCryptexFromContext(context.Background()) != nil {
 		t.Fatal("SystemOS cryptex context boundary changed")
 	}
 }
@@ -529,5 +574,45 @@ func TestSystemOSCryptexExactExternalIntegration(t *testing.T) {
 	}
 	if plan.Source != path || plan.Bytes != systemOSCryptexBytes || plan.SHA256 != systemOSCryptexSHA256 {
 		t.Fatalf("exact SystemOS integration identity changed: %+v", plan)
+	}
+}
+
+func TestSystemOSCryptexTrustExactExternalIntegration(t *testing.T) {
+	const enableInput = "SYSTEMOS_CRYPTEX_TRUST_INTEGRATION"
+	if os.Getenv(enableInput) == "" {
+		return
+	}
+	if os.Getenv(enableInput) != "1" {
+		t.Fatalf("%s must equal 1 when set", enableInput)
+	}
+	path := os.Getenv("SYSTEMOS_CRYPTEX_TRUST_PATH")
+	if !filepath.IsAbs(path) {
+		t.Fatal("explicit SystemOS cryptex trust integration requires absolute SYSTEMOS_CRYPTEX_TRUST_PATH")
+	}
+	plan, err := prepareSystemOSCryptexTrustCache(path, os.Stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Source != path || plan.Bytes != systemOSCryptexTrustBytes || plan.SHA256 != systemOSCryptexTrustSHA256 || plan.Version != systemOSCryptexTrustVersion || plan.EntryCount != systemOSCryptexTrustEntries {
+		t.Fatalf("exact SystemOS trust integration identity changed: %+v", plan)
+	}
+	if err = validateSystemOSCryptexTrustPlan(&plan); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	c, err := newCache(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.out = os.Stderr
+	before, err := payloadAdmissionFingerprint(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := &systemOSCryptexEvidence{}
+	ctx := withSystemOSCryptex(context.Background(), &systemOSCryptexRuntime{TrustCache: &plan, Evidence: evidence})
+	after, err := payloadAdmissionFingerprint(ctx, c)
+	if err != nil || after == before {
+		t.Fatalf("exact cryptex trust did not change admission fingerprint: before=%s after=%s err=%v", before, after, err)
 	}
 }

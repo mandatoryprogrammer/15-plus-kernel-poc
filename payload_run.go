@@ -169,6 +169,7 @@ type admissionIdentity struct {
 	AuthorizationGate string       `json:"authorization_gate"`
 	Trust             []trustEntry `json:"trust,omitempty"`
 	SystemTrust       string       `json:"system_trust,omitempty"`
+	CryptexTrust      string       `json:"cryptex_trust,omitempty"`
 }
 
 type payloadRunReport struct {
@@ -194,20 +195,26 @@ type payloadRunReport struct {
 	Error                string         `json:"error,omitempty"`
 }
 
-func payloadAdmissionFingerprint(c *cache) (string, error) {
+func payloadAdmissionFingerprint(ctx context.Context, c *cache) (string, error) {
 	trust, err := loadTrustAdditions(c)
 	if err != nil {
 		return "", err
 	}
 	trust = bootTrustAdditions(trust)
 	sort.Slice(trust, func(i, j int) bool { return trust[i].Name < trust[j].Name })
-	systemTrust, _, err := loadSystemTrustContext(context.Background(), c)
+	systemTrust, _, err := loadSystemTrustContext(ctx, c)
 	if err != nil {
 		return "", err
 	}
 	identity := admissionIdentity{Runtime: canonicalRuntime.IOSVersion, AuthorizationGate: "adhoc-linker-signed-plus-product-dyld-v1", Trust: trust}
 	if systemTrust != nil {
 		identity.SystemTrust = systemTrust.Object.SHA256
+	}
+	if cryptex := systemOSCryptexFromContext(ctx); cryptex != nil && cryptex.TrustCache != nil {
+		if err = validateSystemOSCryptexTrustPlan(cryptex.TrustCache); err != nil {
+			return "", fmt.Errorf("SystemOS cryptex trust-cache admission: %w", err)
+		}
+		identity.CryptexTrust = cryptex.TrustCache.SHA256
 	}
 	b, err := json.Marshal(identity)
 	if err != nil {
@@ -595,7 +602,7 @@ func runPayload(ctx context.Context, c *cache, args []string) (runErr error) {
 	if err != nil {
 		return err
 	}
-	fingerprint, err := payloadAdmissionFingerprint(c)
+	fingerprint, err := payloadAdmissionFingerprint(ctx, c)
 	if err != nil {
 		return err
 	}

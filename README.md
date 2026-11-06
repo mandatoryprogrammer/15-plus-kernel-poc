@@ -68,6 +68,7 @@ go build -mod=vendor -o 15-plus-kernel-poc .
 | `go run . ui run` | Reuse or boot the phone, sign and hot-upload the UI executable and framework, route ProductOS libraries, and launch the normal remote-screen service arguments. |
 | `go run . service-chain run default` | Start the tracked ProductOS display-service graph in declared order, demand-activate on-demand jobs, verify residency, and launch the UI with reverse-order rollback on a partial failure. |
 | `go run . service-chain run default --preserve-native EXEC=/usr/local/libexec/EXEC -- ARG...` | Add exactly one byte-preserved native executable to the same bounded service-chain transaction. |
+| `go run . service-chain run default --systemos-cryptex IMAGE --systemos-cryptex-trust-cache FILE -- ARG...` | Mount the exact supported SystemOS cryptex and merge its exact complete trust-cache table into the same transient boot admission context. |
 | `go run . mach-service probe SERVICE` | Perform one bounded root-bootstrap lookup and activation message, then release the acquired Mach right exactly. |
 | `go run . ui verify` | Capture a nonblack frame, inject one bounded tap, capture again, and require a changed nonblack frame with atomic PNG/JSON evidence. |
 | `go run . probe normalize FILE` | Normalize/sign one raw probe and report its exact size, SHA-256, CDHash, dependencies, and immutable object path. |
@@ -247,6 +248,7 @@ The tracked default display chain is declarative:
 go run . service-chain validate examples/productos-display-chain.json
 go run . service-chain run default
 go run . service-chain run default --preserve-native /path/to/native-exec=/usr/local/libexec/native-exec -- --diagnostic-argument
+go run . service-chain run default --systemos-cryptex /path/to/SystemOS.ulfo.dmg --systemos-cryptex-trust-cache /path/to/SystemOS.trustcache -- --diagnostic-argument
 ```
 
 The current registry contains the three physically qualified ProductOS jobs:
@@ -256,6 +258,12 @@ system-domain job, demand-activates it when required, verifies a resident PID,
 removes the temporary descriptor, and rolls back already-started jobs in reverse
 order if a later stage fails. Unknown or duplicate service names fail on the
 host before device contact.
+
+The SystemOS trust-cache option is valid only with the SystemOS cryptex image.
+It accepts the one pinned official `trcs` identity, validates its complete table
+semantics, merges every row into the volatile boot trust cache, and includes the
+table identity in environment-reuse admission. It does not project or select
+individual executable hashes.
 
 An optional manifest `execution_timeout` uses Go duration syntax and bounds
 only the final target-side service-chain/program execution. Omitted fields keep

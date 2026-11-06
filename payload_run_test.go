@@ -374,7 +374,7 @@ func TestPayloadRunPreparationAndAdmissionFingerprint(t *testing.T) {
 	if err != nil || changed {
 		t.Fatalf("idempotent store changed=%t err=%v", changed, err)
 	}
-	first, err := payloadAdmissionFingerprint(c)
+	first, err := payloadAdmissionFingerprint(context.Background(), c)
 	if err != nil || len(first) != 64 {
 		t.Fatalf("fingerprint=%q err=%v", first, err)
 	}
@@ -389,14 +389,14 @@ func TestPayloadRunPreparationAndAdmissionFingerprint(t *testing.T) {
 	if _, err = storePayloadPlan(context.Background(), c, []preparedPayload{secondPayload}); err != nil {
 		t.Fatal(err)
 	}
-	unchanged, err := payloadAdmissionFingerprint(c)
+	unchanged, err := payloadAdmissionFingerprint(context.Background(), c)
 	if err != nil || unchanged != first {
 		t.Fatalf("caller payload changed boot policy fingerprint: first=%s second=%s err=%v", first, unchanged, err)
 	}
 	if err = writeTrustAdditions(c, []trustEntry{{Name: "runtime", CDHash: strings.Repeat("ab", 20), Origin: "test"}}); err != nil {
 		t.Fatal(err)
 	}
-	second, err := payloadAdmissionFingerprint(c)
+	second, err := payloadAdmissionFingerprint(context.Background(), c)
 	if err != nil || first == second {
 		t.Fatalf("trust change did not alter fingerprint: first=%s second=%s err=%v", first, second, err)
 	}

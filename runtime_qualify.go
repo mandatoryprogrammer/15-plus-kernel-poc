@@ -198,7 +198,7 @@ func qualifyRuntimeInto(ctx context.Context, c *cache, productRoot string, repor
 		ProductVersion: uiVersion, ProductBuild: uiBuild,
 	}
 
-	report.AdmissionFingerprint, err = payloadAdmissionFingerprint(c)
+	report.AdmissionFingerprint, err = payloadAdmissionFingerprint(ctx, c)
 	if err != nil {
 		return fmt.Errorf("admission fingerprint: %w", err)
 	}
