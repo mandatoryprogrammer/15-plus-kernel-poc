@@ -436,6 +436,9 @@ func runServiceChain(ctx context.Context, c *cache, manifestPath string,
 	report.OutputTruncated = truncated
 	report.ChainReady = markerContains(report.Markers, "PRODUCT_SERVICE_CHAIN stage=ready")
 	report.ProgramReached = markerContains(report.Markers, "CHROOT_UI_DIRFD_TRANSITION stage=exec")
+	report.ProgramReached = report.ProgramReached ||
+		markerContains(report.Markers, "PRODUCT_SERVICE_CHAIN stage=hidd-producer-probe-spawn") ||
+		markerContains(report.Markers, "CAR_LOGICAL_BOUNDS_SUPERVISOR stage=invocation")
 	report.ExecutionTimedOut = errors.Is(runErr, errPayloadExecutionTimeout)
 	report.ExecutionKilled = errors.Is(runErr, errPayloadExecutionKilled)
 	if report.ExecutionTimedOut {

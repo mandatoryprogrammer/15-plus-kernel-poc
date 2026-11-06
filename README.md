@@ -329,6 +329,8 @@ At terminal cleanup, the command writes
 program/admission/cryptex/trust identities, selected structured markers,
 payload transfer/readback report, and cleanup classification. Only the newest
 content-addressed reduced evidence object is retained.
+`go run . evidence reduce` re-runs that deterministic classifier against the
+latest retained service-chain report without contacting the phone.
 
 The current registry contains the three physically qualified ProductOS jobs:
 `appledisplayplatformd`, `hidd.nonui`, and `SwitchBoard`. The launcher creates

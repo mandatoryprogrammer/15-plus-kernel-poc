@@ -107,6 +107,8 @@ func run(ctx context.Context, args []string) error {
 		return probeCommand(ctx, cache, args[1:])
 	case "contract":
 		return contractCommand(ctx, cache, args[1:])
+	case "evidence":
+		return evidenceCommand(cache, args[1:])
 	case "runtime":
 		if len(args) >= 2 && args[1] == "qualify" {
 			return runtimeQualifyCommand(ctx, cache, args[2:])

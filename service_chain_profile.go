@@ -250,9 +250,12 @@ type serviceChainReducedEvidence struct {
 }
 
 func reduceServiceChainEvidence(c *cache, report serviceChainReport) error {
+	report.ProgramReached = report.ProgramReached ||
+		markerContains(report.Markers, "PRODUCT_SERVICE_CHAIN stage=hidd-producer-probe-spawn") ||
+		markerContains(report.Markers, "CAR_LOGICAL_BOUNDS_SUPERVISOR stage=invocation")
 	evidence := serviceChainReducedEvidence{Schema: "15-plus-kernel-poc.service-chain-evidence.v1", Outcome: "failed-before-program", ChainReady: report.ChainReady, ProgramReached: report.ProgramReached, CleanupExact: report.RecoveryCleanup == "" || report.RecoveryCleanup == "persistent-recovery-verified", Markers: append([]string(nil), report.Markers...), Run: report, Identities: map[string]string{"manifest": report.ManifestSHA256, "program": report.Program.SHA256}}
 	if report.ProgramReached {
-		evidence.Outcome = "program-reached"
+		evidence.Outcome = "program-failed"
 	}
 	if report.Exit == "zero" {
 		evidence.Outcome = "zero-exit"
@@ -294,4 +297,19 @@ func reduceServiceChainEvidence(c *cache, report serviceChainReport) error {
 	}
 	fmt.Fprintf(c.out, "Reduced service-chain evidence outcome=%s cleanup_exact=%t sha256=%s evidence=%s\n", evidence.Outcome, evidence.CleanupExact, identity, filepath.Join(c.root, "private", "service-chain-evidence-latest.json"))
 	return nil
+}
+
+func evidenceCommand(c *cache, args []string) error {
+	if len(args) != 1 || args[0] != "reduce" {
+		return errors.New("usage: evidence reduce")
+	}
+	body, err := os.ReadFile(filepath.Join(c.root, "private", "service-chain-run-latest.json"))
+	if err != nil {
+		return err
+	}
+	var report serviceChainReport
+	if err = json.Unmarshal(body, &report); err != nil {
+		return err
+	}
+	return reduceServiceChainEvidence(c, report)
 }

@@ -187,8 +187,24 @@ func TestServiceChainEvidenceReductionIsStructuredAndPrunes(t *testing.T) {
 	if err != nil || json.Unmarshal(body, &evidence) != nil {
 		t.Fatalf("read reduced evidence: %v %s", err, body)
 	}
-	if evidence.Outcome != "program-reached" || !evidence.CleanupExact || len(evidence.Markers) != 2 {
+	if evidence.Outcome != "program-failed" || !evidence.CleanupExact || len(evidence.Markers) != 2 {
 		t.Fatalf("reduction lost outcome: %+v", evidence)
+	}
+}
+
+func TestServiceChainEvidenceRecognizesProducerProgramBoundary(t *testing.T) {
+	c := newProbeTestCache(t)
+	report := serviceChainReport{Schema: "15-plus-kernel-poc.service-chain-report.v1", Exit: "failed", Markers: []string{"PRODUCT_SERVICE_CHAIN stage=hidd-producer-probe-spawn child=217", "CAR_LOGICAL_BOUNDS_SUPERVISOR stage=invocation held_target_mode=1"}}
+	if err := reduceServiceChainEvidence(c, report); err != nil {
+		t.Fatal(err)
+	}
+	var evidence serviceChainReducedEvidence
+	body, err := os.ReadFile(filepath.Join(c.root, "private", "service-chain-evidence-latest.json"))
+	if err != nil || json.Unmarshal(body, &evidence) != nil {
+		t.Fatalf("read evidence: %v", err)
+	}
+	if !evidence.ProgramReached || evidence.Outcome != "program-failed" {
+		t.Fatalf("producer program boundary was misclassified: %+v", evidence)
 	}
 }
 
