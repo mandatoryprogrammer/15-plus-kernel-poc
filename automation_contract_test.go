@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"debug/macho"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,96 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestBinaryWindowContractGeneratesPortableMappedFixture(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := macho.Open(executable)
+	if err != nil {
+		t.Skipf("test executable is not Mach-O: %v", err)
+	}
+	defer file.Close()
+	var segment *macho.Segment
+	for _, load := range file.Loads {
+		candidate, ok := load.(*macho.Segment)
+		if ok && candidate.Filesz >= 32 {
+			segment = candidate
+			break
+		}
+	}
+	if segment == nil {
+		t.Fatal("test executable has no usable file-backed segment")
+	}
+	c := newProbeTestCache(t)
+	destination := filepath.Join(t.TempDir(), "windows.json")
+	args := []string{
+		"windows", "--portable",
+		"--input", "test-image=" + executable,
+		"--window", fmt.Sprintf("second=test-image@0x%x+0x8", segment.Addr+16),
+		"--window", fmt.Sprintf("first=test-image@0x%x+0x10", segment.Addr),
+		"--dest", destination,
+	}
+	if err = contractCommand(context.Background(), c, args); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var contract binaryWindowContract
+	if err = json.Unmarshal(first, &contract); err != nil {
+		t.Fatal(err)
+	}
+	if contract.Schema != binaryWindowContractSchema || len(contract.Inputs) != 1 || len(contract.Windows) != 2 {
+		t.Fatalf("unexpected contract shape: %+v", contract)
+	}
+	if contract.Inputs[0].Name != "test-image" || contract.Inputs[0].Path != "" || contract.Inputs[0].MachO == nil || contract.Inputs[0].MachO.UUID == "" {
+		t.Fatalf("portable input identity changed: %+v", contract.Inputs[0])
+	}
+	if contract.Windows[0].Name != "first" || contract.Windows[1].Name != "second" ||
+		contract.Windows[0].Start != fmt.Sprintf("0x%x", segment.Addr) || contract.Windows[0].Bytes != 16 {
+		t.Fatalf("windows are not sorted or mapped: %+v", contract.Windows)
+	}
+	body, err := os.ReadFile(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := body[segment.Offset : segment.Offset+16]
+	if contract.Windows[0].Hex != hex.EncodeToString(want) || contract.Windows[0].SHA256 != digest(want) ||
+		contract.Windows[0].FileStart != fmt.Sprintf("0x%x", segment.Offset) {
+		t.Fatalf("mapped bytes changed: %+v", contract.Windows[0])
+	}
+	if err = contractCommand(context.Background(), c, args); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatal("identical binary-window inputs produced different JSON")
+	}
+	entries, err := os.ReadDir(filepath.Join(c.root, "private", "binary-window-contracts"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("content-addressed binary-window contracts changed: %v %v", entries, err)
+	}
+}
+
+func TestBinaryWindowContractRejectsAmbiguousOrUnmappedSpecs(t *testing.T) {
+	for _, args := range [][]string{
+		{"--input", "image=/tmp/value", "--window", "bad"},
+		{"--input", "image=/tmp/value", "--window", "one=missing@0x1000+0x10"},
+		{"--input", "image=/tmp/value", "--window", "one=image@0x1000+0"},
+		{"--input", "image=/tmp/value", "--window", "one=image@0x1000+0x100001"},
+		{"--input", "image=/tmp/value", "--window", "one=image@0x1000+0x10", "--window", "one=image@0x2000+0x10"},
+	} {
+		if _, err := parseBinaryWindowOptions(args); err == nil {
+			t.Fatalf("invalid options accepted: %v", args)
+		}
+	}
+}
 
 func TestContractBindSortsInputsAndPrunesSupersededObject(t *testing.T) {
 	c := newProbeTestCache(t)

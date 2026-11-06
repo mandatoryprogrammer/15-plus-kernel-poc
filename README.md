@@ -77,6 +77,7 @@ go build -mod=vendor -o 15-plus-kernel-poc .
 | `go run . probe supervisor --symbol SYMBOL` | Generate a fork-free pthread supervisor with atomic stage markers and a bounded framework-call deadline. |
 | `go run . probe build PROBE.c --sysroot ROOT --capability target-task-control` | Merge named capabilities into one signed Boolean entitlement authority, build twice, and fail if the normalized result does not contain the exact entitlement keys. |
 | `go run . contract bind --input NAME=FILE` | Bind exact input paths, sizes, SHA-256 identities, Mach-O UUIDs/segments, and requested symbol preimages into one content-addressed contract. |
+| `go run . contract windows --input NAME=FILE --window NAME=INPUT@ADDRESS+SIZE` | Generate deterministic mapped instruction/data windows, file offsets, bytes, and hashes from exact Mach-O inputs instead of transcribing disassembler output. |
 | `go run . target image-contract --cache CACHE --image PATH --symbol SYMBOL --dyld DYLD` | Extract one cache image, bind cache/image identities plus exact loose-dyld all-image-info/notifier offsets and preimages, then delete extraction scratch automatically. |
 | `go run . probe supervisor --module target-dyld --module hardware-breakpoints --module structured-cleanup --contract CONTRACT --dest HEADER` | Generate the reusable target-task, dyld-notifier, cache-slide, breakpoint-transition, exception-port, and cleanup controller. |
 | `go run . service-chain profile bind NAME ...` | Bind the exact manifest, native executable, SystemOS cryptex, and trust cache once for later one-command physical runs. |
@@ -230,6 +231,14 @@ go run . contract bind \
   --input dyld=/Volumes/ramdisk/usr/lib/dyld \
   --symbol dyld=lldb_image_notifier
 
+go run . contract windows \
+  --portable \
+  --input launchd=/Volumes/ramdisk/sbin/launchd \
+  --input xpcproxy=/Volumes/ramdisk/usr/libexec/xpcproxy \
+  --window reslide-registration=launchd@0x100007b68+0x18 \
+  --window reslide-flag-apply=xpcproxy@0x100001c04+0x34 \
+  --dest target-cache-windows.json
+
 go run . target image-contract \
   --cache /path/to/dyld_shared_cache_arm64e \
   --image /System/Library/Frameworks/QuartzCore.framework/QuartzCore \
@@ -264,6 +273,15 @@ scratch and is removed on both success and failure.
 Stripped targets may be selected only through `--report FILE --role ROLE`; the
 report schema, complete function hash, cache/image identity, and extracted-image
 16-byte preimage are checked before the role enters the generated controller.
+
+`contract windows` accepts only explicit named thin-Mach-O inputs and bounded
+file-backed virtual-address ranges. It maps each range through the Mach-O
+segments and emits its virtual range, image offset, file range, length, bytes,
+and SHA-256 in stable name order. Unmapped, overflowing, duplicate, unused, or
+larger-than-1-MiB declarations fail closed. `--portable` omits host paths so the
+generated JSON can be tracked as a regression fixture. The content-addressed
+private directory retains only the latest contract; no disassembler scratch is
+created.
 
 ### One-command remote UI
 

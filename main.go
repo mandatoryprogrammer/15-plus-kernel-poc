@@ -45,7 +45,7 @@ func main() {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: 15-plus-kernel-poc shell | exec -- COMMAND | pull REMOTE LOCAL | ui ... | payload ... | probe ... | contract bind | service-chain ... | mach-service ... | runtime qualify | target ... | system-trust ... | cache gc | doctor | reset")
+		return errors.New("usage: 15-plus-kernel-poc shell | exec -- COMMAND | pull REMOTE LOCAL | ui ... | payload ... | probe ... | contract bind|windows | service-chain ... | mach-service ... | runtime qualify | target ... | system-trust ... | cache gc | doctor | reset")
 	}
 	root, err := projectRoot()
 	if err != nil {

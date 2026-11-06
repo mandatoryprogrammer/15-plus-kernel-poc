@@ -152,10 +152,17 @@ func readRegularIdentity(path string) (string, int64, string, error) {
 }
 
 func contractCommand(ctx context.Context, c *cache, args []string) error {
-	if len(args) == 0 || args[0] != "bind" {
-		return errors.New("usage: contract bind --input NAME=PATH [--symbol NAME=SYMBOL]...")
+	if len(args) == 0 {
+		return errors.New("usage: contract bind --input NAME=PATH [--symbol NAME=SYMBOL]... | contract windows --input NAME=PATH --window NAME=INPUT@ADDRESS+SIZE [--portable] [--dest FILE]")
 	}
-	return contractBindCommand(ctx, c, args[1:])
+	switch args[0] {
+	case "bind":
+		return contractBindCommand(ctx, c, args[1:])
+	case "windows":
+		return binaryWindowContractCommand(ctx, c, args[1:])
+	default:
+		return fmt.Errorf("unknown contract command %q", args[0])
+	}
 }
 
 func contractBindCommand(_ context.Context, c *cache, args []string) error {
