@@ -30,8 +30,11 @@ const (
 	systemOSCryptexPartialImage   = systemOSCryptexTargetImage + ".partial"
 
 	systemOSCryptexPrebootMount = "/mnt/iphone/preboot"
-	systemOSCryptexProductMount = "/mnt/iphone/system/private/preboot/Cryptexes/OS"
 	systemOSCryptexVisibleRoot  = "/mnt/iphone/system/System/Cryptexes/OS"
+	// The live Product mount returns the visible path from cd -P/pwd -P even
+	// though the sealed image records a relative private/preboot symlink. Bind
+	// the mount syscall to the observed namespace instead of inferring an alias.
+	systemOSCryptexProductMount = systemOSCryptexVisibleRoot
 	systemOSCryptexCacheMain    = systemOSCryptexVisibleRoot + "/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e"
 	systemOSCryptexCacheBytes   = int64(606208)
 	systemOSCryptexCacheSHA256  = "ee74b8950fecf4bb7f52cd244307019a535880cb0b3f340efbfef1dca23a2de7"
@@ -55,6 +58,7 @@ type systemOSCryptexEvidence struct {
 	ProductVisibleRoot      string   `json:"product_visible_root"`
 	ProductResolution       string   `json:"product_resolution,omitempty"`
 	ProductResolutionExact  bool     `json:"product_resolution_exact"`
+	ProductFallbackExact    bool     `json:"product_fallback_exact"`
 	PreflightPassed         bool     `json:"preflight_passed"`
 	PrebootMountSource      string   `json:"preboot_mount_source,omitempty"`
 	PrebootPreimageReadOnly bool     `json:"preboot_preimage_read_only"`
@@ -235,6 +239,7 @@ func requireSystemOSMountAbsent(body, target string) error {
 type systemOSPreflight struct {
 	Physical        string
 	ResolutionExact bool
+	FallbackExact   bool
 	Stage           string
 	Mounts          string
 }
@@ -277,8 +282,23 @@ func parseSystemOSPreflight(body []byte) (systemOSPreflight, error) {
 		return result, fmt.Errorf("Product cryptex path resolved to %q, want %q",
 			result.Physical, systemOSCryptexProductMount)
 	}
-	if fields["target_entries"] != "0" {
-		return result, fmt.Errorf("Product-resolved cryptex mount preimage changed: %v", fields)
+	result.FallbackExact = fields["fallback_exact"] == "1"
+	for _, assertion := range []struct {
+		field string
+		want  string
+	}{
+		{"fallback_exact", "1"},
+		{"target_entries", "1"},
+		{"system_entries", "1"},
+		{"library_entries", "2"},
+		{"framework_entries", "2"},
+		{"private_framework_entries", "3"},
+		{"cache_main", "0"},
+	} {
+		if fields[assertion.field] != assertion.want {
+			return result, fmt.Errorf("Product cryptex fallback %s=%q, want %q",
+				assertion.field, fields[assertion.field], assertion.want)
+		}
 	}
 	switch fields["stage"] {
 	case "absent":
@@ -310,11 +330,31 @@ func parseSystemOSPreflight(body []byte) (systemOSPreflight, error) {
 }
 
 func systemOSPreflightScript() string {
+	return systemOSPreflightScriptFor(systemOSCryptexVisibleRoot,
+		systemOSCryptexProductMount, systemOSCryptexCacheMain)
+}
+
+func systemOSPreflightScriptFor(visibleRoot, productMount, cacheMain string) string {
 	return "set -u; " +
-		"physical=unavailable; resolution_exact=0; target_entry_count=-1; shopt -s nullglob dotglob; " +
-		"if resolved=$(cd -P " + shellQuote(systemOSCryptexVisibleRoot) + " 2>/dev/null && pwd -P); then " +
-		"physical=$resolved; target_entries=(" + shellQuote(systemOSCryptexVisibleRoot) + "/*); target_entry_count=${#target_entries[@]}; " +
-		"test \"$physical\" = " + shellQuote(systemOSCryptexProductMount) + " && resolution_exact=1 || true; fi; " +
+		"physical=unavailable; resolution_exact=0; fallback_exact=0; target_entry_count=-1; system_entry_count=-1; library_entry_count=-1; framework_entry_count=-1; private_framework_entry_count=-1; cache_main=-1; shopt -s nullglob dotglob; " +
+		"if resolved=$(cd -P " + shellQuote(visibleRoot) + " 2>/dev/null && pwd -P); then " +
+		"physical=$resolved; target_entries=(" + shellQuote(visibleRoot) + "/*); target_entry_count=${#target_entries[@]}; " +
+		"system_entries=(" + shellQuote(visibleRoot+"/System") + "/*); system_entry_count=${#system_entries[@]}; " +
+		"library_entries=(" + shellQuote(visibleRoot+"/System/Library") + "/*); library_entry_count=${#library_entries[@]}; " +
+		"framework_entries=(" + shellQuote(visibleRoot+"/System/Library/Frameworks") + "/*); framework_entry_count=${#framework_entries[@]}; " +
+		"private_framework_entries=(" + shellQuote(visibleRoot+"/System/Library/PrivateFrameworks") + "/*); private_framework_entry_count=${#private_framework_entries[@]}; " +
+		"cache_main=0; if test -e " + shellQuote(cacheMain) + " || test -L " + shellQuote(cacheMain) + "; then cache_main=1; fi; " +
+		"test \"$physical\" = " + shellQuote(productMount) + " && resolution_exact=1 || true; " +
+		"if test $resolution_exact -eq 1 && test $target_entry_count -eq 1 && test $system_entry_count -eq 1 && test $library_entry_count -eq 2 && test $framework_entry_count -eq 2 && test $private_framework_entry_count -eq 3 && test $cache_main -eq 0 && " +
+		"test -d " + shellQuote(visibleRoot+"/System") + " && test ! -L " + shellQuote(visibleRoot+"/System") + " && " +
+		"test -d " + shellQuote(visibleRoot+"/System/Library") + " && test ! -L " + shellQuote(visibleRoot+"/System/Library") + " && " +
+		"test -d " + shellQuote(visibleRoot+"/System/Library/Frameworks") + " && test ! -L " + shellQuote(visibleRoot+"/System/Library/Frameworks") + " && " +
+		"test -d " + shellQuote(visibleRoot+"/System/Library/PrivateFrameworks") + " && test ! -L " + shellQuote(visibleRoot+"/System/Library/PrivateFrameworks") + " && " +
+		"test -d " + shellQuote(visibleRoot+"/System/Library/Frameworks/JavaScriptCore.framework") + " && test ! -L " + shellQuote(visibleRoot+"/System/Library/Frameworks/JavaScriptCore.framework") + " && " +
+		"test -d " + shellQuote(visibleRoot+"/System/Library/Frameworks/WebKit.framework") + " && test ! -L " + shellQuote(visibleRoot+"/System/Library/Frameworks/WebKit.framework") + " && " +
+		"test -d " + shellQuote(visibleRoot+"/System/Library/PrivateFrameworks/WebCore.framework") + " && test ! -L " + shellQuote(visibleRoot+"/System/Library/PrivateFrameworks/WebCore.framework") + " && " +
+		"test -d " + shellQuote(visibleRoot+"/System/Library/PrivateFrameworks/WebInspector.framework") + " && test ! -L " + shellQuote(visibleRoot+"/System/Library/PrivateFrameworks/WebInspector.framework") + " && " +
+		"test -d " + shellQuote(visibleRoot+"/System/Library/PrivateFrameworks/WebKitLegacy.framework") + " && test ! -L " + shellQuote(visibleRoot+"/System/Library/PrivateFrameworks/WebKitLegacy.framework") + "; then fallback_exact=1; fi; fi; " +
 		"stage=absent; owner=0; final=0; partial=0; stage_entries=0; " +
 		"if test -e " + shellQuote(systemOSCryptexOwnedDirectory) + "; then if test -d " + shellQuote(systemOSCryptexOwnedDirectory) + "; then " +
 		"stage_files=(" + shellQuote(systemOSCryptexOwnedDirectory) + "/*); stage_entries=${#stage_files[@]}; " +
@@ -324,7 +364,7 @@ func systemOSPreflightScript() string {
 		shellQuote(systemOSCryptexOwnerPath) + "|" + shellQuote(systemOSCryptexTargetImage) + "|" + shellQuote(systemOSCryptexPartialImage) + ") ;; *) valid=0 ;; esac; done; " +
 		"if test $valid -eq 1 && test $owner -eq 1 && test $final -eq 1 && test $partial -eq 0; then stage=complete; " +
 		"elif test $valid -eq 1 && test $owner -eq 1 && test $final -eq 0; then stage=incomplete; else stage=invalid; fi; else stage=invalid; fi; fi; " +
-		"printf 'SYSTEMOS_CRYPTEX_PREFLIGHT physical=%s resolution_exact=%d target_entries=%d stage=%s owner=%d final=%d partial=%d stage_entries=%d\\n' \"$physical\" \"$resolution_exact\" \"$target_entry_count\" \"$stage\" \"$owner\" \"$final\" \"$partial\" \"$stage_entries\"; " +
+		"printf 'SYSTEMOS_CRYPTEX_PREFLIGHT physical=%s resolution_exact=%d fallback_exact=%d target_entries=%d system_entries=%d library_entries=%d framework_entries=%d private_framework_entries=%d cache_main=%d stage=%s owner=%d final=%d partial=%d stage_entries=%d\\n' \"$physical\" \"$resolution_exact\" \"$fallback_exact\" \"$target_entry_count\" \"$system_entry_count\" \"$library_entry_count\" \"$framework_entry_count\" \"$private_framework_entry_count\" \"$cache_main\" \"$stage\" \"$owner\" \"$final\" \"$partial\" \"$stage_entries\"; " +
 		"printf 'SYSTEMOS_MOUNTS_BEGIN\\n'; /sbin/mount || true; printf 'SYSTEMOS_MOUNTS_END\\n'"
 }
 
@@ -906,6 +946,7 @@ func stageAndMountSystemOSCryptex(ctx context.Context, c *cache, access sshAcces
 	preflight, err := parseSystemOSPreflight(stdout)
 	runtime.Evidence.ProductResolution = preflight.Physical
 	runtime.Evidence.ProductResolutionExact = preflight.ResolutionExact
+	runtime.Evidence.ProductFallbackExact = preflight.FallbackExact
 	if err != nil {
 		return nil, err
 	}

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -31,7 +32,8 @@ func systemOSPreflightFixture(stage string) []byte {
 		owner, partial, entries = "1", "1", "2"
 	}
 	return []byte("SYSTEMOS_CRYPTEX_PREFLIGHT physical=" + systemOSCryptexProductMount +
-		" resolution_exact=1 target_entries=0 stage=" + stage + " owner=" + owner + " final=" + final +
+		" resolution_exact=1 fallback_exact=1 target_entries=1 system_entries=1 library_entries=2" +
+		" framework_entries=2 private_framework_entries=3 cache_main=0 stage=" + stage + " owner=" + owner + " final=" + final +
 		" partial=" + partial + " stage_entries=" + entries + "\nSYSTEMOS_MOUNTS_BEGIN\n" +
 		systemOSMountFixture(false) + "SYSTEMOS_MOUNTS_END\n")
 }
@@ -112,7 +114,13 @@ func TestSystemOSCryptexPreflightBindsProductResolutionAndOwnedStage(t *testing.
 	}{
 		{"physical namespace", systemOSCryptexProductMount, systemOSCryptexPrebootMount + "/Cryptexes/OS", "resolved to"},
 		{"resolution assertion", "resolution_exact=1", "resolution_exact=0", "resolved to"},
-		{"nonempty target", "target_entries=0", "target_entries=1", "mount preimage"},
+		{"fallback assertion", "fallback_exact=1", "fallback_exact=0", "fallback fallback_exact"},
+		{"top-level fallback", "target_entries=1", "target_entries=2", "fallback target_entries"},
+		{"System fallback", "system_entries=1", "system_entries=2", "fallback system_entries"},
+		{"Library fallback", "library_entries=2", "library_entries=3", "fallback library_entries"},
+		{"Frameworks fallback", "framework_entries=2", "framework_entries=3", "fallback framework_entries"},
+		{"PrivateFrameworks fallback", "private_framework_entries=3", "private_framework_entries=4", "fallback private_framework_entries"},
+		{"cache absent", "cache_main=0", "cache_main=1", "fallback cache_main"},
 		{"owner", "stage=complete owner=1", "stage=complete owner=0", "complete stage"},
 		{"partial", "final=1 partial=0", "final=1 partial=1", "complete stage"},
 		{"unowned", "stage=complete", "stage=invalid", "invalid stage"},
@@ -128,8 +136,8 @@ func TestSystemOSCryptexPreflightBindsProductResolutionAndOwnedStage(t *testing.
 	}
 	unresolvedBody := string(systemOSPreflightFixture("absent"))
 	unresolvedBody = strings.Replace(unresolvedBody,
-		"physical="+systemOSCryptexProductMount+" resolution_exact=1 target_entries=0",
-		"physical=unavailable resolution_exact=0 target_entries=-1", 1)
+		"physical="+systemOSCryptexProductMount+" resolution_exact=1 fallback_exact=1 target_entries=1 system_entries=1 library_entries=2 framework_entries=2 private_framework_entries=3 cache_main=0",
+		"physical=unavailable resolution_exact=0 fallback_exact=0 target_entries=-1 system_entries=-1 library_entries=-1 framework_entries=-1 private_framework_entries=-1 cache_main=-1", 1)
 	unresolved, err := parseSystemOSPreflight([]byte(unresolvedBody))
 	if err == nil || unresolved.Physical != "unavailable" ||
 		unresolved.ResolutionExact || !strings.Contains(err.Error(), "resolved to") {
@@ -142,11 +150,115 @@ func TestSystemOSCryptexPreflightBindsProductResolutionAndOwnedStage(t *testing.
 	if script := systemOSPreflightScript(); !strings.Contains(script, "cd -P") ||
 		!strings.Contains(script, "physical=unavailable") ||
 		!strings.Contains(script, "resolution_exact=%d") ||
+		!strings.Contains(script, "fallback_exact=%d") ||
 		!strings.Contains(script, systemOSCryptexVisibleRoot) ||
 		!strings.Contains(script, systemOSCryptexProductMount) ||
+		!strings.Contains(script, systemOSCryptexCacheMain) ||
+		!strings.Contains(script, "JavaScriptCore.framework") ||
+		!strings.Contains(script, "WebKit.framework") ||
+		!strings.Contains(script, "WebCore.framework") ||
+		!strings.Contains(script, "WebInspector.framework") ||
+		!strings.Contains(script, "WebKitLegacy.framework") ||
 		strings.Contains(script, "/mnt/iphone/preboot/Cryptexes/OS\" && pwd") {
 		t.Fatalf("preflight script lost the Product-resolved namespace contract: %s", script)
 	}
+}
+
+func makePortableSystemOSFallback(t *testing.T) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "OS")
+	for _, directory := range []string{
+		"System/Library/Frameworks/JavaScriptCore.framework",
+		"System/Library/Frameworks/WebKit.framework",
+		"System/Library/PrivateFrameworks/WebCore.framework",
+		"System/Library/PrivateFrameworks/WebInspector.framework",
+		"System/Library/PrivateFrameworks/WebKitLegacy.framework",
+	} {
+		if err := os.MkdirAll(filepath.Join(root, directory), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	physical, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return physical
+}
+
+func runPortableSystemOSPreflight(t *testing.T, root string) map[string]string {
+	t.Helper()
+	cacheMain := filepath.Join(root, "System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e")
+	output, err := exec.Command("/bin/bash", "-c",
+		systemOSPreflightScriptFor(root, root, cacheMain)).CombinedOutput()
+	if err != nil {
+		t.Fatalf("portable preflight failed: %v\n%s", err, output)
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.HasPrefix(line, "SYSTEMOS_CRYPTEX_PREFLIGHT ") {
+			fields, parseErr := parseKeyValueLine(line, "SYSTEMOS_CRYPTEX_PREFLIGHT ")
+			if parseErr != nil {
+				t.Fatal(parseErr)
+			}
+			return fields
+		}
+	}
+	t.Fatalf("portable preflight marker absent:\n%s", output)
+	return nil
+}
+
+func TestSystemOSCryptexPortableFallbackShape(t *testing.T) {
+	root := makePortableSystemOSFallback(t)
+	fields := runPortableSystemOSPreflight(t, root)
+	for field, want := range map[string]string{
+		"resolution_exact": "1", "fallback_exact": "1", "target_entries": "1",
+		"system_entries": "1", "library_entries": "2", "framework_entries": "2",
+		"private_framework_entries": "3", "cache_main": "0",
+	} {
+		if fields[field] != want {
+			t.Fatalf("portable exact fallback %s=%q, want %q: %v", field, fields[field], want, fields)
+		}
+	}
+
+	t.Run("unexpected name", func(t *testing.T) {
+		root := makePortableSystemOSFallback(t)
+		if err := os.WriteFile(filepath.Join(root, "unexpected"), []byte("x"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		fields := runPortableSystemOSPreflight(t, root)
+		if fields["target_entries"] != "2" || fields["fallback_exact"] != "0" {
+			t.Fatalf("unexpected fallback entry was not rejected at shape assertion: %v", fields)
+		}
+	})
+
+	t.Run("symlink substitution", func(t *testing.T) {
+		root := makePortableSystemOSFallback(t)
+		webKit := filepath.Join(root, "System/Library/Frameworks/WebKit.framework")
+		if err := os.Remove(webKit); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("JavaScriptCore.framework", webKit); err != nil {
+			t.Fatal(err)
+		}
+		fields := runPortableSystemOSPreflight(t, root)
+		if fields["framework_entries"] != "2" || fields["fallback_exact"] != "0" {
+			t.Fatalf("fallback symlink substitution was not rejected at type assertion: %v", fields)
+		}
+	})
+
+	t.Run("cache present", func(t *testing.T) {
+		root := makePortableSystemOSFallback(t)
+		cache := filepath.Join(root, "System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e")
+		if err := os.MkdirAll(filepath.Dir(cache), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cache, []byte("unexpected"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		fields := runPortableSystemOSPreflight(t, root)
+		if fields["cache_main"] != "1" || fields["fallback_exact"] != "0" {
+			t.Fatalf("existing cache was not rejected at cache assertion: %v", fields)
+		}
+	})
 }
 
 func TestSystemOSCryptexTargetVerifierContract(t *testing.T) {
