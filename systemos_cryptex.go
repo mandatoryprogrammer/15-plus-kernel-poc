@@ -384,6 +384,8 @@ func parseSystemOSVerifier(body []byte, mode string) (systemOSVerifierResult, er
 		prefix = "SYSTEMOS_CRYPTEX_SPACE "
 	} else if mode == "unmount" {
 		prefix = "SYSTEMOS_CRYPTEX_UNMOUNT "
+	} else if mode == "preboot-unmount" {
+		prefix = "SYSTEMOS_CRYPTEX_PREBOOT_UNMOUNT "
 	}
 	var marker string
 	for _, line := range strings.Split(strings.ReplaceAll(string(body), "\r", ""), "\n") {
@@ -429,6 +431,12 @@ func parseSystemOSVerifier(body []byte, mode string) (systemOSVerifierResult, er
 	case "unmount":
 		if result.Path != systemOSCryptexProductMount || fields["status"] != "0" || fields["absent"] != "1" || !systemOSDiskSource.MatchString(result.Source) {
 			return result, fmt.Errorf("target unmount contract changed: %v", fields)
+		}
+	case "preboot-unmount":
+		if result.Path != systemOSCryptexPrebootMount || fields["readonly"] != "0" ||
+			fields["status"] != "0" || fields["absent"] != "1" ||
+			!systemOSDiskSource.MatchString(result.Source) {
+			return result, fmt.Errorf("target Preboot unmount contract changed: %v", fields)
 		}
 	default:
 		return result, fmt.Errorf("unsupported verifier mode %q", mode)
@@ -646,16 +654,81 @@ func (session *systemOSCryptexSession) mountTable() (string, error) {
 	return string(stdout), nil
 }
 
-func (session *systemOSCryptexSession) remountPreboot(readOnly bool) error {
-	option := "-uw"
-	phase := "preboot-remount-rw"
-	if readOnly {
-		option, phase = "-ur", "preboot-remount-ro"
+type systemOSPrebootReadOnlyPlan struct {
+	Action string
+	Source string
+}
+
+func planSystemOSPrebootReadOnly(body, expectedSource string) (systemOSPrebootReadOnlyPlan, error) {
+	var matches []systemOSMount
+	for _, mount := range parseSystemOSMountTable(body) {
+		if mount.Target == systemOSCryptexPrebootMount {
+			matches = append(matches, mount)
+		}
 	}
-	_, stderr, err := runSystemOSCapture(session.ctx, session.c, session.access,
-		phase, []string{"/sbin/mount", option, systemOSCryptexPrebootMount})
-	if err != nil {
-		return fmt.Errorf("%s: %w: %s", phase, err, stderr)
+	if len(matches) > 1 {
+		return systemOSPrebootReadOnlyPlan{}, fmt.Errorf("Preboot has %d mount-table entries", len(matches))
+	}
+	if expectedSource == "" || !systemOSDiskSource.MatchString(expectedSource) {
+		return systemOSPrebootReadOnlyPlan{}, fmt.Errorf("invalid expected Preboot source %q", expectedSource)
+	}
+	if len(matches) == 0 {
+		return systemOSPrebootReadOnlyPlan{Action: "remount", Source: expectedSource}, nil
+	}
+	mount := matches[0]
+	if mount.Source != expectedSource || !mount.Options["apfs"] || !mount.Options["local"] {
+		return systemOSPrebootReadOnlyPlan{}, fmt.Errorf("Preboot source/options changed: %+v", mount)
+	}
+	if mount.Options["read-only"] {
+		if !mount.Options["nobrowse"] {
+			return systemOSPrebootReadOnlyPlan{}, fmt.Errorf("read-only Preboot lost nobrowse: %+v", mount)
+		}
+		return systemOSPrebootReadOnlyPlan{Action: "ready", Source: mount.Source}, nil
+	}
+	return systemOSPrebootReadOnlyPlan{Action: "unmount-remount", Source: mount.Source}, nil
+}
+
+func systemOSPrebootReadOnlyMountCommand(source string) []string {
+	return []string{"/sbin/mount_apfs", "-o", "rdonly,nobrowse", source,
+		systemOSCryptexPrebootMount}
+}
+
+func (session *systemOSCryptexSession) remountPreboot(readOnly bool) error {
+	if !readOnly {
+		_, stderr, err := runSystemOSCapture(session.ctx, session.c, session.access,
+			"preboot-remount-rw", []string{"/sbin/mount", "-uw", systemOSCryptexPrebootMount})
+		if err != nil {
+			return fmt.Errorf("preboot-remount-rw: %w: %s", err, stderr)
+		}
+	} else {
+		mounts, err := session.mountTable()
+		if err != nil {
+			return err
+		}
+		plan, err := planSystemOSPrebootReadOnly(mounts, session.prebootSource)
+		if err != nil {
+			return err
+		}
+		if plan.Action == "ready" {
+			session.prebootWritable = false
+			session.runtime.Evidence.CleanupPrebootReadOnly = true
+			return nil
+		}
+		if plan.Action == "unmount-remount" {
+			unmounted, unmountErr := runSystemOSVerifier(session.ctx, session.c,
+				session.access, "preboot-unmount")
+			if unmountErr != nil {
+				return unmountErr
+			}
+			if unmounted.Source != plan.Source {
+				return fmt.Errorf("Preboot unmount source=%s, want %s", unmounted.Source, plan.Source)
+			}
+		}
+		_, stderr, err := runSystemOSCapture(session.ctx, session.c, session.access,
+			"preboot-remount-ro", systemOSPrebootReadOnlyMountCommand(plan.Source))
+		if err != nil {
+			return fmt.Errorf("preboot-remount-ro: %w: %s", err, stderr)
+		}
 	}
 	mounts, err := session.mountTable()
 	if err != nil {

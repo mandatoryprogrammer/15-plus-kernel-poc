@@ -102,6 +102,44 @@ func TestSystemOSCryptexMountTableContract(t *testing.T) {
 	}
 }
 
+func TestSystemOSCryptexPrebootReadOnlyPlan(t *testing.T) {
+	const source = "/dev/disk3s3"
+	wantCommand := []string{"/sbin/mount_apfs", "-o", "rdonly,nobrowse", source,
+		systemOSCryptexPrebootMount}
+	if command := systemOSPrebootReadOnlyMountCommand(source); !reflect.DeepEqual(command, wantCommand) {
+		t.Fatalf("read-only remount command=%v, want %v", command, wantCommand)
+	}
+	ready, err := planSystemOSPrebootReadOnly(systemOSMountFixture(false), source)
+	if err != nil || ready.Action != "ready" || ready.Source != source {
+		t.Fatalf("read-only plan=%+v err=%v", ready, err)
+	}
+	writableBody := strings.Replace(systemOSMountFixture(false), "read-only, ", "", 1)
+	writable, err := planSystemOSPrebootReadOnly(writableBody, source)
+	if err != nil || writable.Action != "unmount-remount" || writable.Source != source {
+		t.Fatalf("writable plan=%+v err=%v", writable, err)
+	}
+	absentBody := "/dev/disk3s1s1 on /mnt/iphone/system (apfs, sealed, local, read-only, journaled, nobrowse)\n"
+	absent, err := planSystemOSPrebootReadOnly(absentBody, source)
+	if err != nil || absent.Action != "remount" || absent.Source != source {
+		t.Fatalf("absent plan=%+v err=%v", absent, err)
+	}
+	for _, mutation := range []struct {
+		name, body, expected, want string
+	}{
+		{"source", systemOSMountFixture(false), "/dev/disk4s3", "source/options"},
+		{"expected source", absentBody, "not-a-device", "invalid expected"},
+		{"browse", strings.Replace(systemOSMountFixture(false), "nobrowse", "browse", 1), source, "lost nobrowse"},
+		{"duplicate", systemOSMountFixture(false) + source + " on " + systemOSCryptexPrebootMount + " (apfs, local, journaled)\n", source, "2 mount-table"},
+	} {
+		t.Run(mutation.name, func(t *testing.T) {
+			_, err := planSystemOSPrebootReadOnly(mutation.body, mutation.expected)
+			if err == nil || !strings.Contains(err.Error(), mutation.want) {
+				t.Fatalf("site-specific Preboot plan mutation err=%v, want %q", err, mutation.want)
+			}
+		})
+	}
+}
+
 func TestSystemOSCryptexPreflightBindsProductResolutionAndOwnedStage(t *testing.T) {
 	for _, stage := range []string{"absent", "incomplete", "complete"} {
 		preflight, err := parseSystemOSPreflight(systemOSPreflightFixture(stage))
@@ -289,6 +327,11 @@ func TestSystemOSCryptexTargetVerifierContract(t *testing.T) {
 	if _, err = parseSystemOSVerifier(unmount, "unmount"); err != nil {
 		t.Fatal(err)
 	}
+	prebootUnmount := []byte("SYSTEMOS_CRYPTEX_PREBOOT_UNMOUNT path=" + systemOSCryptexPrebootMount +
+		" source=/dev/disk3s3 readonly=0 status=0 absent=1 exact=1\n")
+	if _, err = parseSystemOSVerifier(prebootUnmount, "preboot-unmount"); err != nil {
+		t.Fatal(err)
+	}
 	for _, mutation := range []struct{ name, body, mode, want string }{
 		{"space source", strings.Replace(string(space), "/dev/disk3s3", "tmpfs", 1), "space", "space contract"},
 		{"space capacity", strings.Replace(string(space), "9999999999", "1", 1), "space", "insufficient"},
@@ -296,6 +339,11 @@ func TestSystemOSCryptexTargetVerifierContract(t *testing.T) {
 		{"file hash", strings.Replace(string(file), systemOSCryptexSHA256, strings.Repeat("0", 64), 1), "read", "identity"},
 		{"file fsync", strings.Replace(string(file), "fsync=0", "fsync=1", 1), "read", "mode"},
 		{"unmount status", strings.Replace(string(unmount), "status=0", "status=1", 1), "unmount", "unmount contract"},
+		{"Preboot unmount path", strings.Replace(string(prebootUnmount), systemOSCryptexPrebootMount, systemOSCryptexProductMount, 1), "preboot-unmount", "Preboot unmount contract"},
+		{"Preboot unmount source", strings.Replace(string(prebootUnmount), "/dev/disk3s3", "tmpfs", 1), "preboot-unmount", "Preboot unmount contract"},
+		{"Preboot unmount readonly", strings.Replace(string(prebootUnmount), "readonly=0", "readonly=1", 1), "preboot-unmount", "Preboot unmount contract"},
+		{"Preboot unmount status", strings.Replace(string(prebootUnmount), "status=0", "status=1", 1), "preboot-unmount", "Preboot unmount contract"},
+		{"Preboot unmount absent", strings.Replace(string(prebootUnmount), "absent=1", "absent=0", 1), "preboot-unmount", "Preboot unmount contract"},
 	} {
 		t.Run(mutation.name, func(t *testing.T) {
 			_, err := parseSystemOSVerifier([]byte(mutation.body), mutation.mode)
