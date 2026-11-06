@@ -291,6 +291,7 @@ var probeCapabilityRegistry = map[string][]string{
 	"spawn-subsystem-root": {"com.apple.private.spawn-subsystem-root"},
 	"target-task-control":  {"com.apple.system-task-ports.control"},
 	"launchd-job-manager":  {"com.apple.private.xpc.launchd.job-manager"},
+	"launchd-app-server":   {"com.apple.private.xpc.launchd.app-server"},
 }
 
 func parseProbeBuild(args []string) (probeBuildOptions, error) {
@@ -340,7 +341,7 @@ func parseProbeBuild(args []string) (probeBuildOptions, error) {
 		case "--capability":
 			entitlements, ok := probeCapabilityRegistry[value]
 			if !ok {
-				return result, fmt.Errorf("unknown capability %q (known: launchd-job-manager, spawn-subsystem-root, target-task-control)", value)
+				return result, fmt.Errorf("unknown capability %q (known: launchd-app-server, launchd-job-manager, spawn-subsystem-root, target-task-control)", value)
 			}
 			for _, existing := range result.Capabilities {
 				if existing == value {

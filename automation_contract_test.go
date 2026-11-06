@@ -146,7 +146,7 @@ func TestCapabilitySourceMergesExistingAuthorityAndNamedCapabilities(t *testing.
 static const char authority[] = "<plist><dict><key>com.apple.existing</key><true/></dict></plist>";
 int main(void) { return 0; }
 `)
-	options := probeBuildOptions{Source: "source.c", Capabilities: []string{"target-task-control", "spawn-subsystem-root"}, CapabilityEntitlements: []string{"com.apple.system-task-ports.control", "com.apple.private.spawn-subsystem-root"}}
+	options := probeBuildOptions{Source: "source.c", Capabilities: []string{"target-task-control", "spawn-subsystem-root", "launchd-app-server"}, CapabilityEntitlements: []string{"com.apple.system-task-ports.control", "com.apple.private.spawn-subsystem-root", "com.apple.private.xpc.launchd.app-server"}}
 	scratch := t.TempDir()
 	if err := mergeProbeCapabilitySource(source, &options, scratch); err != nil {
 		t.Fatal(err)
@@ -162,12 +162,12 @@ int main(void) { return 0; }
 	if bytes.Contains(sanitized, []byte("__entitlements")) {
 		t.Fatal("old authority was not removed")
 	}
-	for _, key := range []string{"com.apple.existing", "com.apple.private.spawn-subsystem-root", "com.apple.system-task-ports.control"} {
+	for _, key := range []string{"com.apple.existing", "com.apple.private.spawn-subsystem-root", "com.apple.private.xpc.launchd.app-server", "com.apple.system-task-ports.control"} {
 		if !bytes.Contains(authority, []byte(key)) {
 			t.Fatalf("merged authority lacks %s: %s", key, authority)
 		}
 	}
-	if !sortStringsEqual(options.CapabilityEntitlements, []string{"com.apple.existing", "com.apple.private.spawn-subsystem-root", "com.apple.system-task-ports.control"}) {
+	if !sortStringsEqual(options.CapabilityEntitlements, []string{"com.apple.existing", "com.apple.private.spawn-subsystem-root", "com.apple.private.xpc.launchd.app-server", "com.apple.system-task-ports.control"}) {
 		t.Fatalf("entitlement report changed: %v", options.CapabilityEntitlements)
 	}
 }

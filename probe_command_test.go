@@ -271,6 +271,19 @@ func TestProbeBuildParserRejectsUnboundedInputs(t *testing.T) {
 	}
 }
 
+func TestProbeBuildParsesLaunchdAppServerCapability(t *testing.T) {
+	options, err := parseProbeBuild([]string{
+		"source.c", "--sysroot", "/tmp/sysroot", "--capability", "launchd-app-server",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sortStringsEqual(options.Capabilities, []string{"launchd-app-server"}) ||
+		!sortStringsEqual(options.CapabilityEntitlements, []string{"com.apple.private.xpc.launchd.app-server"}) {
+		t.Fatalf("app-server capability changed: %+v", options)
+	}
+}
+
 func TestProbeBuildFailsClearlyWhenRequestedLinkInputIsAbsent(t *testing.T) {
 	c := newProbeTestCache(t)
 	installFakeXcrun(t, unsignedRuntimeMachOFixture(2), false)

@@ -195,8 +195,9 @@ go run . probe run .cache/objects/OBJECT_HASH -- --probe-argument
 
 Named capabilities remove manual entitlement editing. The current registry is
 `target-task-control` (`com.apple.system-task-ports.control`),
-`spawn-subsystem-root` (`com.apple.private.spawn-subsystem-root`), and
-`launchd-job-manager` (`com.apple.private.xpc.launchd.job-manager`). If the
+`spawn-subsystem-root` (`com.apple.private.spawn-subsystem-root`),
+`launchd-job-manager` (`com.apple.private.xpc.launchd.job-manager`), and
+`launchd-app-server` (`com.apple.private.xpc.launchd.app-server`). If the
 source already declares Boolean entitlements, the builder removes that one
 source section from an isolated copy, merges its keys with the named
 capabilities, and emits exactly one authority section. The original source is
