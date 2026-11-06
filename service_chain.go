@@ -52,6 +52,7 @@ type serviceChainReport struct {
 	LauncherMode                  string    `json:"launcher_mode"`
 	Arguments                     []string  `json:"arguments"`
 	Program                       uiProgram `json:"program"`
+	PreservedNativeExecutable     string    `json:"preserved_native_executable,omitempty"`
 	ChainReady                    bool      `json:"chain_ready"`
 	ProgramReached                bool      `json:"program_reached"`
 	ExecutionTimeout              string    `json:"execution_timeout"`
@@ -271,26 +272,54 @@ func writePrivateJSON(c *cache, leaf string, value any) error {
 	return os.Rename(temporaryName, filepath.Join(directory, leaf+"-latest.json"))
 }
 
-func serviceChainRunArguments(c *cache, profile uiProfile, manifest serviceChainManifest, programArguments []string) ([]string, error) {
+func serviceChainRunArguments(c *cache, profile uiProfile, manifest serviceChainManifest,
+	nativeExecutable *[2]string, programArguments []string) ([]string, error) {
 	if err := validateServiceChainManifest(manifest); err != nil {
 		return nil, err
 	}
-	return uiPayloadRunArgumentsMode(c, profile, "--service-chain-v1", []string{strings.Join(manifest.Services, ",")}, programArguments)
+	runArguments, err := uiPayloadRunArgumentsMode(c, profile, "--service-chain-v1", []string{strings.Join(manifest.Services, ",")}, programArguments)
+	if err != nil || nativeExecutable == nil {
+		return runArguments, err
+	}
+	if nativeExecutable[0] == "" || nativeExecutable[1] == "" || !validPayloadDestination(nativeExecutable[1]) {
+		return nil, errors.New("service-chain byte-preserved native executable is invalid")
+	}
+	delimiter := -1
+	for index, value := range runArguments {
+		if value == "--" {
+			delimiter = index
+			break
+		}
+	}
+	if delimiter < 0 {
+		return nil, errors.New("service-chain payload arguments lack the launcher delimiter")
+	}
+	result := make([]string, 0, len(runArguments)+2)
+	result = append(result, runArguments[:delimiter]...)
+	result = append(result, "--preserve-native", nativeExecutable[0]+"="+nativeExecutable[1])
+	return append(result, runArguments[delimiter:]...), nil
 }
 
 func newServiceChainReport(manifestPath, manifestHash string,
 	manifest serviceChainManifest, programArguments []string,
-	program uiProgram, executionTimeout time.Duration) serviceChainReport {
+	program uiProgram, executionTimeout time.Duration,
+	nativeExecutable *[2]string) serviceChainReport {
+	preservedDestination := ""
+	if nativeExecutable != nil {
+		preservedDestination = nativeExecutable[1]
+	}
 	return serviceChainReport{
 		Schema: "15-plus-kernel-poc.service-chain-report.v1", StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		Manifest: manifestPath, ManifestSHA256: manifestHash, Name: manifest.Name,
 		Services: append([]string(nil), manifest.Services...), LauncherMode: "--service-chain-v1",
 		Arguments: append([]string(nil), programArguments...), Program: program,
-		ExecutionTimeout: executionTimeout.String(), Exit: "running",
+		PreservedNativeExecutable: preservedDestination,
+		ExecutionTimeout:          executionTimeout.String(), Exit: "running",
 	}
 }
 
-func runServiceChain(ctx context.Context, c *cache, manifestPath string, programArguments []string) (runErr error) {
+func runServiceChain(ctx context.Context, c *cache, manifestPath string,
+	nativeExecutable *[2]string, programArguments []string) (runErr error) {
 	manifest, manifestHash, err := loadServiceChainManifest(manifestPath)
 	if err != nil {
 		return err
@@ -310,12 +339,12 @@ func runServiceChain(ctx context.Context, c *cache, manifestPath string, program
 	if err != nil {
 		return err
 	}
-	runArguments, err := serviceChainRunArguments(c, profile, manifest, programArguments)
+	runArguments, err := serviceChainRunArguments(c, profile, manifest, nativeExecutable, programArguments)
 	if err != nil {
 		return err
 	}
 	report := newServiceChainReport(manifestPath, manifestHash, manifest,
-		programArguments, *profile.Program, executionTimeout)
+		programArguments, *profile.Program, executionTimeout, nativeExecutable)
 	if err = writePrivateJSON(c, "service-chain-run", report); err != nil {
 		return fmt.Errorf("write initial service-chain report: %w", err)
 	}
@@ -392,21 +421,48 @@ func serviceChainCommand(ctx context.Context, c *cache, args []string) error {
 		return nil
 	}
 	if len(args) >= 2 && args[0] == "run" {
-		manifestPath := args[1]
+		manifestPath, nativeExecutable, programArguments, err := parseServiceChainRunArguments(args[1:])
+		if err != nil {
+			return err
+		}
 		if manifestPath == "default" {
 			manifestPath = filepath.Join(filepath.Dir(c.root), "examples", "productos-display-chain.json")
 		}
-		var programArguments []string
-		if len(args) > 2 {
-			if args[2] != "--" {
-				return errors.New("usage: service-chain run MANIFEST [-- PROGRAM-ARG...]")
-			}
-			programArguments = make([]string, len(args)-3)
-			copy(programArguments, args[3:])
-		}
-		return runServiceChain(ctx, c, manifestPath, programArguments)
+		return runServiceChain(ctx, c, manifestPath, nativeExecutable, programArguments)
 	}
-	return errors.New("usage: service-chain validate MANIFEST | service-chain run MANIFEST|default [-- PROGRAM-ARG...]")
+	return errors.New("usage: service-chain validate MANIFEST | service-chain run MANIFEST|default [--preserve-native FILE=DEST] [-- PROGRAM-ARG...]")
+}
+
+func parseServiceChainRunArguments(args []string) (manifestPath string,
+	nativeExecutable *[2]string, programArguments []string, err error) {
+	if len(args) == 0 {
+		err = errors.New("usage: service-chain run MANIFEST|default [--preserve-native FILE=DEST] [-- PROGRAM-ARG...]")
+		return
+	}
+	manifestPath = args[0]
+	for index := 1; index < len(args); index++ {
+		switch args[index] {
+		case "--":
+			programArguments = append([]string{}, args[index+1:]...)
+			return
+		case "--preserve-native":
+			if nativeExecutable != nil || index+1 >= len(args) {
+				err = errors.New("service-chain run accepts exactly one --preserve-native FILE=DEST")
+				return
+			}
+			index++
+			source, destination, splitErr := splitPayloadInclude(args[index])
+			if splitErr != nil {
+				err = fmt.Errorf("parse --preserve-native: %w", splitErr)
+				return
+			}
+			nativeExecutable = &[2]string{source, destination}
+		default:
+			err = fmt.Errorf("unknown service-chain run option %q; put target arguments after --", args[index])
+			return
+		}
+	}
+	return
 }
 
 func machServiceCommand(ctx context.Context, c *cache, args []string) error {

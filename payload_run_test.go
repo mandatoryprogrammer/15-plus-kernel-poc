@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"debug/macho"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -13,9 +15,10 @@ import (
 )
 
 func TestParsePayloadRunOwnsArgumentsAndIncludes(t *testing.T) {
-	source, destination, includes, environment, arguments, err := parsePayloadRun([]string{
+	source, destination, includes, nativeExecutables, environment, arguments, err := parsePayloadRun([]string{
 		"tool", "--dest", "/usr/local/bin/ui-tool",
 		"--include", "libui.dylib=/usr/local/lib/libui.dylib",
+		"--preserve-native", "hidd.nonui=/usr/local/libexec/productos-hidd.nonui",
 		"--env", "DYLD_FRAMEWORK_PATH=/usr/local/lib",
 		"--", "--frame", "caller value",
 	})
@@ -24,18 +27,160 @@ func TestParsePayloadRunOwnsArgumentsAndIncludes(t *testing.T) {
 	}
 	if source != "tool" || destination != "/usr/local/bin/ui-tool" || len(includes) != 1 ||
 		includes[0] != [2]string{"libui.dylib", "/usr/local/lib/libui.dylib"} ||
+		len(nativeExecutables) != 1 || nativeExecutables[0] != [2]string{"hidd.nonui", "/usr/local/libexec/productos-hidd.nonui"} ||
 		len(environment) != 1 || environment[0] != "DYLD_FRAMEWORK_PATH=/usr/local/lib" ||
 		len(arguments) != 2 || arguments[0] != "--frame" || arguments[1] != "caller value" {
-		t.Fatalf("parsed run changed: source=%q destination=%q includes=%v environment=%v arguments=%v", source, destination, includes, environment, arguments)
+		t.Fatalf("parsed run changed: source=%q destination=%q includes=%v native=%v environment=%v arguments=%v", source, destination, includes, nativeExecutables, environment, arguments)
 	}
-	if _, _, _, _, _, err = parsePayloadRun([]string{"tool", "unquoted-target-argument"}); err == nil {
+	if _, _, _, _, _, _, err = parsePayloadRun([]string{"tool", "unquoted-target-argument"}); err == nil {
 		t.Fatal("target argument without -- accepted")
 	}
-	if _, _, _, _, _, err = parsePayloadRun([]string{"tool", "--env", "BAD-NAME=value"}); err == nil {
+	if _, _, _, _, _, _, err = parsePayloadRun([]string{"tool", "--env", "BAD-NAME=value"}); err == nil {
 		t.Fatal("invalid environment accepted")
 	}
 	if _, _, err = splitPayloadInclude("lib=/tmp/lib"); err == nil {
 		t.Fatal("unsafe include destination accepted")
+	}
+}
+
+func nativeExecutableFixture(t *testing.T, fileType macho.Type) []byte {
+	t.Helper()
+	signed, err := adHocSignExecutable(unsignedRuntimeMachOFixture(fileType), "native-preserve-fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, changed, err := addDeterministicLCUUID(signed)
+	if err != nil || !changed {
+		t.Fatalf("add fixture LC_UUID changed=%t err=%v", changed, err)
+	}
+	signature, directory := runtimeSignatureForTest(t, signed)
+	be := binary.BigEndian
+	be.PutUint32(directory[12:], be.Uint32(directory[12:])&^codeDirectoryAdHocFlag)
+	count := int(be.Uint32(signature[8:]))
+	for index := 0; index < count; index++ {
+		row := signature[12+index*8:]
+		if be.Uint32(row) != codeSignatureCMSSlot {
+			continue
+		}
+		offset := int(be.Uint32(row[4:]))
+		if offset+12 > len(signature) || be.Uint32(signature[offset:]) != 0xfade0b01 {
+			t.Fatal("fixture CMS slot is invalid")
+		}
+		be.PutUint32(signature[offset+4:], 12)
+		copy(signature[offset+8:offset+12], []byte{0x30, 0x02, 0x05, 0x00})
+		if superSize := int(be.Uint32(signature[4:])); superSize < offset+12 {
+			be.PutUint32(signature[4:], uint32(offset+12))
+		}
+		if _, inspectErr := inspectExecutable(signed); inspectErr != nil {
+			t.Fatalf("native fixture signature invalid: %v", inspectErr)
+		}
+		return signed
+	}
+	t.Fatal("fixture CMS slot is absent")
+	return nil
+}
+
+func TestPrepareNativeExecutablePreservesExactSignedBytes(t *testing.T) {
+	root := t.TempDir()
+	body := nativeExecutableFixture(t, macho.TypeExec)
+	source := filepath.Join(root, "native-hidd")
+	if err := os.WriteFile(source, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := prepareNativeExecutable(source, "/usr/local/libexec/productos-hidd.nonui")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(prepared.Body, body) || prepared.Entry.SHA256 != digest(body) ||
+		prepared.Entry.Size != int64(len(body)) || len(prepared.Entry.CDHash) != 40 ||
+		!prepared.Entry.BytePreserved || !prepared.Entry.NativeSignature ||
+		prepared.Signed || prepared.LCUUIDAdded || prepared.LinkerSigned || prepared.FileType != macho.TypeExec {
+		t.Fatalf("native executable was not preserved exactly: %+v", prepared)
+	}
+	if _, err = preparePayload(source, "/usr/local/libexec/productos-hidd.nonui"); err == nil || !strings.Contains(err.Error(), "not ad-hoc") {
+		t.Fatalf("ordinary normalization unexpectedly accepted native signature: %v", err)
+	}
+
+	mutated := bytes.Clone(body)
+	mutated[0x200] ^= 1
+	mutatedSource := filepath.Join(root, "mutated-native")
+	if err = os.WriteFile(mutatedSource, mutated, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = prepareNativeExecutable(mutatedSource, "/usr/local/libexec/mutated-native"); err == nil || !strings.Contains(err.Error(), "code signature page") {
+		t.Fatalf("mutated native code was accepted: %v", err)
+	}
+
+	adHocFlags := bytes.Clone(body)
+	_, directory := runtimeSignatureForTest(t, adHocFlags)
+	binary.BigEndian.PutUint32(directory[12:], binary.BigEndian.Uint32(directory[12:])|codeDirectoryAdHocFlag)
+	adHocFlagsSource := filepath.Join(root, "native-with-ad-hoc-flags")
+	if err = os.WriteFile(adHocFlagsSource, adHocFlags, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = prepareNativeExecutable(adHocFlagsSource, "/usr/local/libexec/native-with-ad-hoc-flags"); err == nil || !strings.Contains(err.Error(), "non-ad-hoc") {
+		t.Fatalf("ad-hoc CodeDirectory flags were accepted: %v", err)
+	}
+
+	badCMS := bytes.Clone(body)
+	signature, _ := runtimeSignatureForTest(t, badCMS)
+	for index := 0; index < int(binary.BigEndian.Uint32(signature[8:])); index++ {
+		row := signature[12+index*8:]
+		if binary.BigEndian.Uint32(row) == codeSignatureCMSSlot {
+			offset := int(binary.BigEndian.Uint32(row[4:]))
+			signature[offset] ^= 1
+		}
+	}
+	badCMSSource := filepath.Join(root, "native-with-bad-cms")
+	if err = os.WriteFile(badCMSSource, badCMS, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = prepareNativeExecutable(badCMSSource, "/usr/local/libexec/native-with-bad-cms"); err == nil || !strings.Contains(err.Error(), "CMS") {
+		t.Fatalf("invalid CMS envelope was accepted: %v", err)
+	}
+
+	dylibSource := filepath.Join(root, "native-dylib")
+	if err = os.WriteFile(dylibSource, nativeExecutableFixture(t, macho.TypeDylib), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = prepareNativeExecutable(dylibSource, "/usr/local/libexec/native-dylib"); err == nil || !strings.Contains(err.Error(), "not an executable") {
+		t.Fatalf("native dylib was accepted as an executable: %v", err)
+	}
+
+	adHoc, err := adHocSignExecutable(unsignedRuntimeMachOFixture(macho.TypeExec), "ad-hoc-rejected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adHoc, _, err = addDeterministicLCUUID(adHoc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adHocSource := filepath.Join(root, "ad-hoc")
+	if err = os.WriteFile(adHocSource, adHoc, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = prepareNativeExecutable(adHocSource, "/usr/local/libexec/ad-hoc"); err == nil || !strings.Contains(err.Error(), "CMS") && !strings.Contains(err.Error(), "non-ad-hoc") {
+		t.Fatalf("ad-hoc input was accepted by native preservation: %v", err)
+	}
+}
+
+func TestPayloadPlanRequiresPairedNativePreservationIdentity(t *testing.T) {
+	entry := payloadEntry{
+		Destination: "/usr/local/libexec/native", SHA256: strings.Repeat("a", 64),
+		Size: 1, CDHash: strings.Repeat("b", 40), BytePreserved: true, NativeSignature: true,
+	}
+	if _, err := payloadPlan(nil, []payloadEntry{entry}, payloadLimit); err != nil {
+		t.Fatalf("complete native preservation identity rejected: %v", err)
+	}
+	for _, mutate := range []func(*payloadEntry){
+		func(value *payloadEntry) { value.BytePreserved = false },
+		func(value *payloadEntry) { value.NativeSignature = false },
+	} {
+		candidate := entry
+		mutate(&candidate)
+		if _, err := payloadPlan(nil, []payloadEntry{candidate}, payloadLimit); err == nil || !strings.Contains(err.Error(), "byte-preserved native") {
+			t.Fatalf("split native preservation identity accepted: %+v err=%v", candidate, err)
+		}
 	}
 }
 

@@ -75,3 +75,21 @@ register/map in this process context, or provide an equivalent ProductOS
 execution context that already owns that mapping. Reopening iBoot, per-binary
 CDHash wiring, serial chunk uploads, or manual framework staging does not
 address this terminal.
+
+## Host-only native-executable staging qualification
+
+Qualification date: 2026-11-06 (America/Los_Angeles). This is a host-tooling
+result only; no device run or UI capability is claimed.
+
+- `--preserve-native FILE=DEST` is explicit and leaves ordinary payload and UI
+  normalization unchanged.
+- The validator requires one regular thin iOS executable, verified primary
+  CodeDirectory page hashes, a non-ad-hoc primary CodeDirectory, a nonempty CMS
+  envelope, and an existing `LC_UUID` before it records the original SHA-256
+  and CDHash.
+- Focused tests prove byte-for-byte preservation, reject a modified signed code
+  page, ad-hoc flags, an invalid CMS envelope, and a native dylib, and prove the
+  exact service-chain option ordering plus unchanged default UI arguments.
+- Service-chain parsing permits exactly one native executable before the target
+  argument delimiter. The service-chain report records its destination and the
+  payload report records its exact preserved identity.

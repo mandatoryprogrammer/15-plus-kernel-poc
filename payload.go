@@ -64,11 +64,13 @@ var reservedPayloadDestinations = map[string]bool{
 }
 
 type payloadEntry struct {
-	Destination string `json:"destination"`
-	SHA256      string `json:"sha256"`
-	Size        int64  `json:"size"`
-	CDHash      string `json:"cdhash"`
-	Origin      string `json:"origin"`
+	Destination     string `json:"destination"`
+	SHA256          string `json:"sha256"`
+	Size            int64  `json:"size"`
+	CDHash          string `json:"cdhash"`
+	Origin          string `json:"origin"`
+	BytePreserved   bool   `json:"byte_preserved,omitempty"`
+	NativeSignature bool   `json:"native_signature,omitempty"`
 }
 
 func basePayload() ([]payloadEntry, error) {
@@ -116,6 +118,9 @@ func payloadPlan(base, additions []payloadEntry, capacity int64) ([]payloadEntry
 		seen[a.Destination] = true
 		if !digestPattern.MatchString(a.SHA256) || len(a.CDHash) != 40 || a.Size <= 0 || a.Size > payloadLimit {
 			return nil, fmt.Errorf("invalid payload identity: %s", a.Destination)
+		}
+		if a.BytePreserved != a.NativeSignature {
+			return nil, fmt.Errorf("invalid byte-preserved native payload identity: %s", a.Destination)
 		}
 		if _, err := hex.DecodeString(a.CDHash); err != nil {
 			return nil, err
@@ -276,6 +281,84 @@ func codeHash(executable, signature []byte) (string, error) {
 		return hex.EncodeToString(h[:]), nil
 	}
 	return "", errors.New("primary CodeDirectory missing")
+}
+
+func validateNativeExecutableSignature(input []byte) error {
+	if len(input) < 32 || binary.LittleEndian.Uint32(input) != 0xfeedfacf {
+		return errors.New("native executable signature requires a thin little-endian 64-bit Mach-O")
+	}
+	le, be := binary.LittleEndian, binary.BigEndian
+	ncmds, commandsSize := int(le.Uint32(input[16:])), int(le.Uint32(input[20:]))
+	if ncmds < 1 || ncmds > 4096 || commandsSize < 8 || 32+commandsSize > len(input) {
+		return errors.New("native executable signature found invalid load-command geometry")
+	}
+	at, signatureOffset, signatureSize := 32, -1, 0
+	for index := 0; index < ncmds; index++ {
+		if at > 32+commandsSize-8 {
+			return errors.New("native executable signature found a truncated load command")
+		}
+		command, size := le.Uint32(input[at:]), int(le.Uint32(input[at+4:]))
+		if size < 8 || size&7 != 0 || at+size > 32+commandsSize {
+			return errors.New("native executable signature found an invalid load command")
+		}
+		if command == 0x1d {
+			if size != 16 || signatureOffset >= 0 {
+				return errors.New("native executable signature found duplicate or malformed signature commands")
+			}
+			signatureOffset, signatureSize = int(le.Uint32(input[at+8:])), int(le.Uint32(input[at+12:]))
+		}
+		at += size
+	}
+	if at != 32+commandsSize || signatureOffset <= 0 || signatureSize < 20 || signatureOffset > len(input)-signatureSize {
+		return errors.New("native executable signature is not a bounded embedded signature")
+	}
+	signature := input[signatureOffset : signatureOffset+signatureSize]
+	if be.Uint32(signature) != 0xfade0cc0 {
+		return errors.New("native executable signature is not an embedded SuperBlob")
+	}
+	superSize := int(be.Uint32(signature[4:]))
+	if superSize < 12 || superSize > len(signature) {
+		return errors.New("native executable signature has invalid SuperBlob bounds")
+	}
+	signature = signature[:superSize]
+	count := int(be.Uint32(signature[8:]))
+	if count < 1 || count > 1024 || 12+count*8 > len(signature) {
+		return errors.New("native executable signature has an invalid index")
+	}
+	primaryFlags, primaryFound, cmsFound := uint32(0), false, false
+	seen := make(map[uint32]bool, count)
+	for index := 0; index < count; index++ {
+		row := signature[12+index*8:]
+		typeID, offset := be.Uint32(row), int(be.Uint32(row[4:]))
+		if seen[typeID] || offset < 12+count*8 || offset > len(signature)-8 {
+			return errors.New("native executable signature has a duplicate type or invalid blob offset")
+		}
+		seen[typeID] = true
+		length := int(be.Uint32(signature[offset+4:]))
+		if length < 8 || offset > len(signature)-length {
+			return errors.New("native executable signature has an invalid blob length")
+		}
+		blob := signature[offset : offset+length]
+		switch typeID {
+		case 0:
+			if length < 44 || be.Uint32(blob) != 0xfade0c02 {
+				return errors.New("native executable signature has an invalid primary CodeDirectory")
+			}
+			primaryFlags, primaryFound = be.Uint32(blob[12:]), true
+		case codeSignatureCMSSlot:
+			if length <= 8 || be.Uint32(blob) != 0xfade0b01 {
+				return errors.New("native executable signature has an empty or invalid CMS blob")
+			}
+			cmsFound = true
+		}
+	}
+	if !primaryFound || primaryFlags&codeDirectoryAdHocFlag != 0 {
+		return errors.New("native executable signature requires a non-ad-hoc primary CodeDirectory")
+	}
+	if !cmsFound {
+		return errors.New("native executable signature requires a nonempty CMS blob")
+	}
+	return nil
 }
 
 func alignValue(value, alignment int) int { return (value + alignment - 1) &^ (alignment - 1) }
@@ -1266,6 +1349,60 @@ func preparePayload(source, destination string) (preparedPayload, error) {
 	result.LinkerSigned = true
 	result.Body = b
 	result.Entry = payloadEntry{Destination: destination, SHA256: digest(b), Size: int64(len(b)), CDHash: cdhash, Origin: "user addition"}
+	return result, nil
+}
+
+func prepareNativeExecutable(source, destination string) (preparedPayload, error) {
+	var result preparedPayload
+	if !validPayloadDestination(destination) || reservedPayloadDestinations[destination] {
+		return result, fmt.Errorf("invalid or reserved native executable destination %q", destination)
+	}
+	info, err := os.Lstat(source)
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > payloadLimit {
+		return result, errors.New("byte-preserved native executable input must be one regular file of at most 64 MiB")
+	}
+	body, err := os.ReadFile(source)
+	if err != nil {
+		return result, err
+	}
+	if int64(len(body)) != info.Size() {
+		return result, errors.New("byte-preserved native executable changed while it was read")
+	}
+	cdhash, err := inspectExecutable(body)
+	if err != nil {
+		return result, fmt.Errorf("inspect byte-preserved native executable: %w", err)
+	}
+	if err = validateNativeExecutableSignature(body); err != nil {
+		return result, err
+	}
+	f, err := macho.NewFile(bytes.NewReader(body))
+	if err != nil {
+		return result, fmt.Errorf("inspect byte-preserved native executable Mach-O: %w", err)
+	}
+	defer f.Close()
+	if f.Type != macho.TypeExec {
+		return result, errors.New("byte-preserved native input is not an executable")
+	}
+	hasUUID := false
+	for _, load := range f.Loads {
+		if raw := load.Raw(); len(raw) >= 8 && f.ByteOrder.Uint32(raw) == 0x1b && len(raw) == 24 {
+			hasUUID = true
+			break
+		}
+	}
+	if !hasUUID {
+		return result, errors.New("byte-preserved native executable lacks LC_UUID and cannot be normalized")
+	}
+	result.Dependencies, err = f.ImportedLibraries()
+	if err != nil {
+		return result, fmt.Errorf("inspect byte-preserved native executable dependencies: %w", err)
+	}
+	result.FileType = f.Type
+	result.Body = bytes.Clone(body)
+	result.Entry = payloadEntry{
+		Destination: destination, SHA256: digest(body), Size: int64(len(body)), CDHash: cdhash,
+		Origin: "byte-preserved native executable", BytePreserved: true, NativeSignature: true,
+	}
 	return result, nil
 }
 

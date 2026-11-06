@@ -61,11 +61,13 @@ go build -mod=vendor -o 15-plus-kernel-poc .
 | `go run . payload add FILE --dest /usr/local/bin/NAME` | Select its destination. |
 | `go run . payload run FILE -- ARG...` | Import/sign, trust, boot or reuse, verify, and execute one caller-provided binary end to end. |
 | `go run . payload run FILE --include LIB=/usr/local/lib/LIB -- ARG...` | Include and admit a dylib dependency in the same transaction. |
+| `go run . payload run FILE --preserve-native EXEC=/usr/local/libexec/EXEC -- ARG...` | Stage one already-native-signed executable byte-for-byte after validating its code pages, non-ad-hoc CodeDirectory, CMS envelope, and LC_UUID. |
 | `go run . ui import DIRECTORY` | Verify and content-address the complete MonkeyBars/iRemoteFramebuffer bundle once. |
 | `go run . ui program import FILE [--argv0 VALUE]` | Normalize and select any compatible executable as the active UI program without changing the imported bundle or launcher. |
 | `go run . ui program reset` | Select the preserved MonkeyBars bundle executable again with its legacy argv[0]. |
 | `go run . ui run` | Reuse or boot the phone, sign and hot-upload the UI executable and framework, route ProductOS libraries, and launch the normal remote-screen service arguments. |
 | `go run . service-chain run default` | Start the tracked ProductOS display-service graph in declared order, demand-activate on-demand jobs, verify residency, and launch the UI with reverse-order rollback on a partial failure. |
+| `go run . service-chain run default --preserve-native EXEC=/usr/local/libexec/EXEC -- ARG...` | Add exactly one byte-preserved native executable to the same bounded service-chain transaction. |
 | `go run . mach-service probe SERVICE` | Perform one bounded root-bootstrap lookup and activation message, then release the acquired Mach right exactly. |
 | `go run . ui verify` | Capture a nonblack frame, inject one bounded tap, capture again, and require a changed nonblack frame with atomic PNG/JSON evidence. |
 | `go run . probe normalize FILE` | Normalize/sign one raw probe and report its exact size, SHA-256, CDHash, dependencies, and immutable object path. |
@@ -164,6 +166,15 @@ live admitted environment. Transient staged paths are indexed and removed
 automatically after the next run or `payload remove`, while prepared boot
 objects and pre-existing cache content are never eligible for that cleanup.
 
+`--preserve-native FILE=DEST` is a separate, opt-in path for an installed
+native executable whose bytes and Apple signature must remain unchanged. It
+accepts one regular thin iOS executable only after verifying every primary
+CodeDirectory page hash, a non-ad-hoc primary CodeDirectory, a nonempty CMS
+blob, and an existing `LC_UUID`. It records the original SHA-256 and CDHash,
+stores and transfers those exact bytes, and uses the ordinary target readback.
+It never invokes UUID normalization, ad-hoc signing, or caller-linker-signed
+mutation. Ordinary `--include` behavior is unchanged.
+
 ### Deterministic probe loop
 
 Use `probe build` instead of reproducing compiler and normalization commands by
@@ -235,6 +246,7 @@ The tracked default display chain is declarative:
 ```sh
 go run . service-chain validate examples/productos-display-chain.json
 go run . service-chain run default
+go run . service-chain run default --preserve-native /path/to/native-exec=/usr/local/libexec/native-exec -- --diagnostic-argument
 ```
 
 The current registry contains the three physically qualified ProductOS jobs:
@@ -250,6 +262,10 @@ only the final target-side service-chain/program execution. Omitted fields keep
 the compatibility default of 10 seconds; configured values must be between one
 second and five minutes. The tracked default display chain selects 16 seconds,
 and the resolved value is written to `service-chain-run-latest.json`.
+The service-chain command accepts at most one `--preserve-native` option before
+the `--` target-argument delimiter. Its destination is recorded in the service-
+chain report; the exact preserved SHA-256, CDHash, size, and preservation flags
+are recorded in `payload-run-latest.json`.
 
 Once RFB is available, `ui verify` is the acceptance operation rather than a
 process or socket check:

@@ -136,7 +136,7 @@ func run(ctx context.Context, args []string) error {
 		if len(args) == 2 && args[1] == "install-ssh" {
 			return installPayloadOverSSH(ctx, cache)
 		}
-		return errors.New("usage: payload list | payload add FILE [--dest PATH] | payload run FILE [--dest PATH] [--include FILE=DEST]... [-- ARG...] | payload remove PATH | payload install-ssh")
+		return errors.New("usage: payload list | payload add FILE [--dest PATH] | payload run FILE [--dest PATH] [--include FILE=DEST]... [--preserve-native FILE=DEST]... [-- ARG...] | payload remove PATH | payload install-ssh")
 	case "trust":
 		if len(args) == 2 && args[1] == "list" {
 			return listTrust(cache, os.Stdout)

@@ -34,7 +34,7 @@ func TestServiceChainManifestAndLauncherArguments(t *testing.T) {
 			{Relative: uiFrameworkRelative, SHA256: "framebuffer"},
 		},
 	}
-	got, err := serviceChainRunArguments(c, profile, manifest, []string{"-h"})
+	got, err := serviceChainRunArguments(c, profile, manifest, nil, []string{"-h"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,6 +46,44 @@ func TestServiceChainManifestAndLauncherArguments(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("service-chain payload arguments changed:\n got: %q\nwant: %q", got, want)
+	}
+	native := [2]string{"/host/Product-hidd", "/usr/local/libexec/productos-hidd.nonui"}
+	got, err = serviceChainRunArguments(c, profile, manifest, &native, []string{"--hidd-bootstrap-boundary-v5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = []string{
+		filepath.Join(c.root, "objects", "launcher"), "--dest", uiRootLauncherTarget,
+		"--include", filepath.Join(c.root, "objects", "active-program") + "=" + uiStagedTarget,
+		"--include", filepath.Join(c.root, "objects", "framebuffer") + "=" + uiFrameworkTarget,
+		"--preserve-native", "/host/Product-hidd=/usr/local/libexec/productos-hidd.nonui",
+		"--", "--service-chain-v1", "appledisplayplatformd,hidd.nonui,SwitchBoard", "--program-v1", "/usr/local/bin/test-program", "--", "--hidd-bootstrap-boundary-v5",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("service-chain native staging arguments changed:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestParseServiceChainRunArgumentsOwnsNativeStaging(t *testing.T) {
+	manifest, native, program, err := parseServiceChainRunArguments([]string{
+		"default", "--preserve-native", "/host/Product-hidd=/usr/local/libexec/productos-hidd.nonui",
+		"--", "--hidd-bootstrap-boundary-v5",
+	})
+	if err != nil || manifest != "default" || native == nil ||
+		*native != [2]string{"/host/Product-hidd", "/usr/local/libexec/productos-hidd.nonui"} ||
+		!reflect.DeepEqual(program, []string{"--hidd-bootstrap-boundary-v5"}) {
+		t.Fatalf("parsed service-chain run changed: manifest=%q native=%v program=%q err=%v", manifest, native, program, err)
+	}
+	for _, args := range [][]string{
+		{},
+		{"default", "--preserve-native"},
+		{"default", "--preserve-native", "bad"},
+		{"default", "--preserve-native", "one=/usr/local/libexec/one", "--preserve-native", "two=/usr/local/libexec/two"},
+		{"default", "target-argument-before-delimiter"},
+	} {
+		if _, _, _, err = parseServiceChainRunArguments(args); err == nil {
+			t.Fatalf("invalid service-chain run arguments accepted: %q", args)
+		}
 	}
 }
 
@@ -131,7 +169,7 @@ func TestDefaultDisplayChainSelectsReportedExecutionTimeout(t *testing.T) {
 		t.Fatalf("default display-chain timeout=%s, want at least 16s", timeout)
 	}
 	report := newServiceChainReport("manifest.json", "manifest-sha",
-		manifest, []string{"-h"}, uiProgram{SHA256: "program-sha"}, timeout)
+		manifest, []string{"-h"}, uiProgram{SHA256: "program-sha"}, timeout, nil)
 	if report.ExecutionTimeout != "16s" {
 		t.Fatalf("reported execution timeout=%q, want 16s", report.ExecutionTimeout)
 	}
@@ -140,6 +178,12 @@ func TestDefaultDisplayChainSelectsReportedExecutionTimeout(t *testing.T) {
 		report.Program.SHA256 != "program-sha" ||
 		!reflect.DeepEqual(report.Arguments, []string{"-h"}) {
 		t.Fatalf("initial report lost run identity: %+v", report)
+	}
+	native := [2]string{"/host/native", "/usr/local/libexec/native"}
+	nativeReport := newServiceChainReport("manifest.json", "manifest-sha",
+		manifest, nil, uiProgram{}, timeout, &native)
+	if nativeReport.PreservedNativeExecutable != native[1] {
+		t.Fatalf("service-chain report lost preserved native destination: %+v", nativeReport)
 	}
 }
 

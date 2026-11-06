@@ -255,9 +255,9 @@ func splitPayloadInclude(value string) (string, string, error) {
 	return source, destination, nil
 }
 
-func parsePayloadRun(args []string) (source, destination string, includes [][2]string, environment, commandArgs []string, err error) {
+func parsePayloadRun(args []string) (source, destination string, includes, nativeExecutables [][2]string, environment, commandArgs []string, err error) {
 	if len(args) == 0 || args[0] == "--" {
-		err = errors.New("usage: payload run FILE [--dest /usr/local/bin/NAME] [--include FILE=/usr/local/lib/NAME]... [-- ARG...]")
+		err = errors.New("usage: payload run FILE [--dest /usr/local/bin/NAME] [--include FILE=DEST]... [--preserve-native FILE=DEST]... [-- ARG...]")
 		return
 	}
 	source = args[0]
@@ -286,6 +286,18 @@ func parsePayloadRun(args []string) (source, destination string, includes [][2]s
 				return
 			}
 			includes = append(includes, [2]string{includeSource, includeDestination})
+		case "--preserve-native":
+			if index+1 >= len(args) {
+				err = errors.New("--preserve-native needs FILE=DEST")
+				return
+			}
+			index++
+			var nativeSource, nativeDestination string
+			nativeSource, nativeDestination, err = splitPayloadInclude(args[index])
+			if err != nil {
+				return
+			}
+			nativeExecutables = append(nativeExecutables, [2]string{nativeSource, nativeDestination})
 		case "--env":
 			if index+1 >= len(args) {
 				err = errors.New("--env needs NAME=VALUE")
@@ -528,7 +540,7 @@ func firstUnpreparedPayloadSlot(ctx context.Context, c *cache, includes []payloa
 // exact target readback, and argument-safe execution.
 func runPayload(ctx context.Context, c *cache, args []string) (runErr error) {
 	defer pruneTransientCache(c)
-	source, destination, includes, environment, commandArgs, err := parsePayloadRun(args)
+	source, destination, includes, nativeExecutables, environment, commandArgs, err := parsePayloadRun(args)
 	if err != nil {
 		return err
 	}
@@ -551,6 +563,17 @@ func runPayload(ctx context.Context, c *cache, args []string) (runErr error) {
 			return fmt.Errorf("prepare include %s: %w", include[0], prepareErr)
 		}
 		prepared = append(prepared, dependency)
+	}
+	for _, native := range nativeExecutables {
+		if seen[native[1]] {
+			return fmt.Errorf("duplicate payload destination %s", native[1])
+		}
+		seen[native[1]] = true
+		executable, prepareErr := prepareNativeExecutable(native[0], native[1])
+		if prepareErr != nil {
+			return fmt.Errorf("prepare byte-preserved native executable %s: %w", native[0], prepareErr)
+		}
+		prepared = append(prepared, executable)
 	}
 	prepared, err = discoverPayloadDependencies(source, prepared)
 	if err != nil {
