@@ -325,7 +325,7 @@ func validateNativeExecutableSignature(input []byte) error {
 	if count < 1 || count > 1024 || 12+count*8 > len(signature) {
 		return errors.New("native executable signature has an invalid index")
 	}
-	primaryFlags, primaryFound, cmsFound := uint32(0), false, false
+	primaryFound, cmsFound := false, false
 	seen := make(map[uint32]bool, count)
 	for index := 0; index < count; index++ {
 		row := signature[12+index*8:]
@@ -344,19 +344,19 @@ func validateNativeExecutableSignature(input []byte) error {
 			if length < 44 || be.Uint32(blob) != 0xfade0c02 {
 				return errors.New("native executable signature has an invalid primary CodeDirectory")
 			}
-			primaryFlags, primaryFound = be.Uint32(blob[12:]), true
+			primaryFound = true
 		case codeSignatureCMSSlot:
-			if length <= 8 || be.Uint32(blob) != 0xfade0b01 {
-				return errors.New("native executable signature has an empty or invalid CMS blob")
+			if length < 8 || be.Uint32(blob) != 0xfade0b01 {
+				return errors.New("native executable signature has an invalid CMS wrapper")
 			}
 			cmsFound = true
 		}
 	}
-	if !primaryFound || primaryFlags&codeDirectoryAdHocFlag != 0 {
-		return errors.New("native executable signature requires a non-ad-hoc primary CodeDirectory")
+	if !primaryFound {
+		return errors.New("native executable signature requires a primary CodeDirectory")
 	}
 	if !cmsFound {
-		return errors.New("native executable signature requires a nonempty CMS blob")
+		return errors.New("native executable signature requires a valid CMS wrapper")
 	}
 	return nil
 }

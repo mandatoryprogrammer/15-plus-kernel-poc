@@ -118,8 +118,12 @@ func TestPrepareNativeExecutablePreservesExactSignedBytes(t *testing.T) {
 	if err = os.WriteFile(adHocFlagsSource, adHocFlags, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = prepareNativeExecutable(adHocFlagsSource, "/usr/local/libexec/native-with-ad-hoc-flags"); err == nil || !strings.Contains(err.Error(), "non-ad-hoc") {
-		t.Fatalf("ad-hoc CodeDirectory flags were accepted: %v", err)
+	preparedAdHoc, err := prepareNativeExecutable(adHocFlagsSource,
+		"/usr/local/libexec/native-with-ad-hoc-flags")
+	if err != nil || !bytes.Equal(preparedAdHoc.Body, adHocFlags) ||
+		!preparedAdHoc.Entry.BytePreserved || !preparedAdHoc.Entry.NativeSignature {
+		t.Fatalf("valid ad-hoc CodeDirectory was not preserved: %+v err=%v",
+			preparedAdHoc, err)
 	}
 
 	badCMS := bytes.Clone(body)
@@ -147,20 +151,77 @@ func TestPrepareNativeExecutablePreservesExactSignedBytes(t *testing.T) {
 		t.Fatalf("native dylib was accepted as an executable: %v", err)
 	}
 
-	adHoc, err := adHocSignExecutable(unsignedRuntimeMachOFixture(macho.TypeExec), "ad-hoc-rejected")
+}
+
+func TestPrepareNativeExecutableAcceptsAdHocCodeDirectoryWithEmptyCMSWrapper(t *testing.T) {
+	root := t.TempDir()
+	body := nativeExecutableFixture(t, macho.TypeExec)
+	signature, directory := runtimeSignatureForTest(t, body)
+	be := binary.BigEndian
+	be.PutUint32(directory[12:], be.Uint32(directory[12:])|codeDirectoryAdHocFlag)
+	for index := 0; index < int(be.Uint32(signature[8:])); index++ {
+		row := signature[12+index*8:]
+		if be.Uint32(row) != codeSignatureCMSSlot {
+			continue
+		}
+		offset := int(be.Uint32(row[4:]))
+		if offset > len(signature)-8 || be.Uint32(signature[offset:]) != 0xfade0b01 {
+			t.Fatal("fixture CMS slot is invalid")
+		}
+		be.PutUint32(signature[offset+4:], 8)
+		be.PutUint32(signature[4:], uint32(offset+8))
+		source := filepath.Join(root, "native-empty-cms")
+		if err := os.WriteFile(source, body, 0600); err != nil {
+			t.Fatal(err)
+		}
+		prepared, err := prepareNativeExecutable(source,
+			"/usr/local/libexec/productos-hidd.nonui")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(prepared.Body, body) || !prepared.Entry.BytePreserved ||
+			!prepared.Entry.NativeSignature {
+			t.Fatalf("empty CMS wrapper input was not preserved: %+v", prepared)
+		}
+		return
+	}
+	t.Fatal("fixture CMS slot is absent")
+}
+
+func TestPrepareNativeExecutableExactExternalIntegration(t *testing.T) {
+	const (
+		enableInput = "NATIVE_EXECUTABLE_INTEGRATION"
+		pathInput   = "NATIVE_EXECUTABLE_PATH"
+		shaInput    = "NATIVE_EXECUTABLE_SHA256"
+	)
+	enabled := os.Getenv(enableInput)
+	if enabled == "" {
+		return
+	}
+	if enabled != "1" {
+		t.Fatalf("%s must equal 1 when set", enableInput)
+	}
+	source, expectedSHA := os.Getenv(pathInput), os.Getenv(shaInput)
+	if !filepath.IsAbs(source) || len(expectedSHA) != 64 {
+		t.Fatalf("explicit integration requires absolute %s and 64-character %s",
+			pathInput, shaInput)
+	}
+	body, err := os.ReadFile(source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	adHoc, _, err = addDeterministicLCUUID(adHoc)
+	if got := digest(body); got != expectedSHA {
+		t.Fatalf("external native executable sha256=%s want=%s", got, expectedSHA)
+	}
+	prepared, err := prepareNativeExecutable(source,
+		"/usr/local/libexec/productos-hidd.nonui")
 	if err != nil {
 		t.Fatal(err)
 	}
-	adHocSource := filepath.Join(root, "ad-hoc")
-	if err = os.WriteFile(adHocSource, adHoc, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = prepareNativeExecutable(adHocSource, "/usr/local/libexec/ad-hoc"); err == nil || !strings.Contains(err.Error(), "CMS") && !strings.Contains(err.Error(), "non-ad-hoc") {
-		t.Fatalf("ad-hoc input was accepted by native preservation: %v", err)
+	if !bytes.Equal(prepared.Body, body) || prepared.Entry.SHA256 != expectedSHA ||
+		prepared.Entry.Size != int64(len(body)) || !prepared.Entry.BytePreserved ||
+		!prepared.Entry.NativeSignature {
+		t.Fatalf("external native executable was not preserved exactly: %+v", prepared)
 	}
 }
 
