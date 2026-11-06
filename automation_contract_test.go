@@ -214,10 +214,15 @@ func TestTargetImageContractReportRoleMutationsReachNamedChecks(t *testing.T) {
 }
 
 func TestTargetImageContractReportRoleArgumentsFailClosed(t *testing.T) {
+	valid, err := parseTargetImageContract([]string{"--cache", "cache", "--image", "image", "--report", "report", "--role", "producer-registration"})
+	if err != nil || valid.Report != "report" || len(valid.Roles) != 1 || valid.Roles[0] != "producer-registration" {
+		t.Fatalf("canonical report role was rejected: options=%+v err=%v", valid, err)
+	}
 	for _, args := range [][]string{
 		{"--cache", "cache", "--image", "image", "--report", "report"},
 		{"--cache", "cache", "--image", "image", "--role", "producer-registration"},
 		{"--cache", "cache", "--image", "image", "--report", "report", "--role", "producer-registration", "--role", "producer-registration"},
+		{"--cache", "cache", "--image", "image", "--report", "report", "--role", "../producer-registration"},
 	} {
 		if _, err := parseTargetImageContract(args); err == nil {
 			t.Fatalf("invalid report-role arguments were accepted: %v", args)

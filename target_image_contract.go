@@ -106,7 +106,7 @@ func parseTargetImageContract(args []string) (targetImageContractOptions, error)
 			}
 			options.Report = value
 		case "--role":
-			if !probeSymbolPattern.MatchString(value) {
+			if !rolePattern.MatchString(value) {
 				return options, fmt.Errorf("invalid report role %q", value)
 			}
 			for _, existing := range options.Roles {
