@@ -477,6 +477,7 @@ func serviceChainCommand(ctx context.Context, c *cache, args []string) error {
 			return err
 		}
 		var runProfile *serviceChainProfile
+		programArgv0 := ""
 		if manifestPath == "default" {
 			manifestPath = filepath.Join(filepath.Dir(c.root), "examples", "productos-display-chain.json")
 		} else if profile, ok, profileErr := loadServiceChainProfile(c, manifestPath); profileErr != nil {
@@ -484,6 +485,7 @@ func serviceChainCommand(ctx context.Context, c *cache, args []string) error {
 		} else if ok {
 			selected := profile
 			runProfile = &selected
+			programArgv0 = profile.ProgramArgv0
 			manifestPath = profile.Manifest.Path
 			if nativeExecutable != nil || systemOSCryptexPath != "" || systemOSCryptexTrustPath != "" {
 				return errors.New("named profile inputs cannot be overridden")
@@ -512,7 +514,7 @@ func serviceChainCommand(ctx context.Context, c *cache, args []string) error {
 			}
 		}
 		if programPath != "" {
-			if err = importUIProgram(ctx, c, programPath, ""); err != nil {
+			if err = importUIProgram(ctx, c, programPath, programArgv0); err != nil {
 				if priorProfile != nil {
 					_ = writeUIProfile(c, *priorProfile)
 				}

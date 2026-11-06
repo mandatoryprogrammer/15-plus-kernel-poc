@@ -312,6 +312,7 @@ Bind a repeated physical topology once, then supply only the research program:
 go run . service-chain profile bind product-hidd-systemos \
   --manifest examples/productos-display-chain.json \
   --launcher /path/to/productos-ui-root-launcher \
+  --program-argv0 /usr/local/libexec/productos-car-producer-state \
   --preserve-native /path/to/hidd=/usr/local/libexec/productos-hidd.nonui \
   --systemos-cryptex /path/to/SystemOS.ulfo.dmg \
   --systemos-cryptex-trust-cache /path/to/SystemOS.trustcache

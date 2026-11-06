@@ -159,13 +159,13 @@ func TestServiceChainProfileBindsExactInputsAndRejectsMutation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	args := []string{"bind", "product-hidd-systemos", "--manifest", manifest, "--launcher", launcher, "--preserve-native", native + "=/usr/local/libexec/hidd", "--systemos-cryptex", cryptex, "--systemos-cryptex-trust-cache", trust}
+	args := []string{"bind", "product-hidd-systemos", "--manifest", manifest, "--launcher", launcher, "--program-argv0", "/usr/local/libexec/productos-car-producer-state", "--preserve-native", native + "=/usr/local/libexec/hidd", "--systemos-cryptex", cryptex, "--systemos-cryptex-trust-cache", trust}
 	if err := serviceChainProfileCommand(context.Background(), c, args); err != nil {
 		t.Fatal(err)
 	}
 	profile, ok, err := loadServiceChainProfile(c, "product-hidd-systemos")
 	if err != nil || !ok || profile.Launcher == nil || profile.PreservedNative == nil || profile.SystemOSCryptex == nil || profile.SystemOSTrust == nil || profile.PreservedDestination != "/usr/local/libexec/hidd" ||
-		profile.Launcher.Path != launcher || profile.PreservedNative.Path != native || profile.SystemOSCryptex.Path != cryptex || profile.SystemOSTrust.Path != trust {
+		profile.Launcher.Path != launcher || profile.ProgramArgv0 != "/usr/local/libexec/productos-car-producer-state" || profile.PreservedNative.Path != native || profile.SystemOSCryptex.Path != cryptex || profile.SystemOSTrust.Path != trust {
 		t.Fatalf("profile incomplete: %+v ok=%v err=%v", profile, ok, err)
 	}
 	if err = os.WriteFile(native, []byte("mutated"), 0o600); err != nil {
