@@ -92,6 +92,14 @@ extern poc_kr ptrace(int, int, void *, int);
 extern poc_kr mach_msg(void *, int, poc_u32, poc_u32, poc_port, poc_u32, poc_port);
 
 #define POC_TASK_DYLD_INFO 17
+#define POC_TASK_DYLD_INFO_COUNT 5
+#define POC_TASK_DYLD_ALL_IMAGE_INFO_64 1
+#define POC_DYLD_ALL_IMAGE_INFOS_READ_SIZE 192
+#define POC_DYLD_ALL_IMAGE_INFOS_MIN_CACHE_SIZE 184
+#define POC_DYLD_NOTIFICATION_OFFSET 16
+#define POC_DYLD_SHARED_CACHE_SLIDE_OFFSET 152
+#define POC_DYLD_SHARED_CACHE_UUID_OFFSET 160
+#define POC_DYLD_SHARED_CACHE_BASE_OFFSET 176
 #define POC_ARM_DEBUG_STATE64 15
 #define POC_ARM_DEBUG_STATE64_COUNT 130
 #define POC_EXCEPTION_DEFAULT 1
@@ -120,29 +128,55 @@ struct poc_target_controller {
     struct poc_exception_snapshot prior;
     struct poc_target_image image;
 };
+struct poc_target_dyld_snapshot {
+    struct poc_task_dyld_info info;
+    poc_u32 count;
+    poc_kr task_info_status;
+    poc_kr read_status;
+    poc_u64 read_bytes;
+    poc_u8 bytes[POC_DYLD_ALL_IMAGE_INFOS_READ_SIZE];
+};
 static poc_u64 poc_load_u64(const poc_u8 *p) {
     poc_u64 v = 0; for (unsigned i=0; i != 8; ++i) v |= ((poc_u64)p[i]) << (i*8); return v;
 }
 static int poc_equal16(const poc_u8 *a, const poc_u8 *b) {
     unsigned diff=0; for (unsigned i=0; i != 16; ++i) diff |= a[i]^b[i]; return diff == 0;
 }
-static poc_u64 poc_strip_pac(poc_u64 value) { return value & 0x0000ffffffffffffULL; }
+static poc_u64 poc_xpaci(poc_u64 value) {
+    __asm__ volatile("xpaci %0" : "+r"(value));
+    return value;
+}
+static int poc_remote_read_exact(poc_port task, poc_u64 address, void *body, poc_u64 size, poc_kr *status_out, poc_u64 *read_out) {
+    poc_u64 read=0; poc_kr status=mach_vm_read_overwrite(task,address,size,(poc_u64)body,&read);
+    if (status_out) *status_out=status; if (read_out) *read_out=read;
+    return status == 0 && read == size ? 0 : -1;
+}
 static int poc_remote_read(poc_port task, poc_u64 address, void *body, poc_u64 size) {
-    poc_u64 read=0; return mach_vm_read_overwrite(task, address, size, (poc_u64)body, &read) == 0 && read == size ? 0 : -1;
+    return poc_remote_read_exact(task,address,body,size,(poc_kr *)0,(poc_u64 *)0);
+}
+static int poc_target_dyld_snapshot_read(poc_port task, struct poc_target_dyld_snapshot *snapshot) {
+    for (unsigned i=0;i!=sizeof(*snapshot);++i) ((poc_u8 *)snapshot)[i]=0;
+    snapshot->count=POC_TASK_DYLD_INFO_COUNT;
+    snapshot->read_status=-1;
+    snapshot->task_info_status=task_info(task,POC_TASK_DYLD_INFO,&snapshot->info,&snapshot->count);
+    if (snapshot->task_info_status != 0 || snapshot->count != POC_TASK_DYLD_INFO_COUNT ||
+        snapshot->info.address == 0 || snapshot->info.size < POC_DYLD_ALL_IMAGE_INFOS_MIN_CACHE_SIZE ||
+        snapshot->info.format != POC_TASK_DYLD_ALL_IMAGE_INFO_64) return -1;
+    return poc_remote_read_exact(task,snapshot->info.address,snapshot->bytes,sizeof(snapshot->bytes),
+        &snapshot->read_status,&snapshot->read_bytes) == 0 ? 0 : -2;
 }
 `)
 	fmt.Fprintf(&source, "static const poc_u8 poc_expected_cache_uuid[16] = {%s};\n", cacheUUID)
 	fmt.Fprintf(&source, "static const poc_u8 poc_expected_image_uuid[16] = {%s};\n", imageUUID)
 	fmt.Fprintf(&source, "#define POC_STATIC_CACHE_BASE 0x%xULL\n#define POC_STATIC_IMAGE_BASE 0x%xULL\n", contract.CacheStaticBase, contract.StaticBase)
 	source.WriteString(`static int poc_target_image_resolve(poc_port task, struct poc_target_image *out) {
-    struct poc_task_dyld_info task_dyld = {0}; poc_u32 count = 5; poc_u8 remote[192] = {0};
-    if (task_info(task, POC_TASK_DYLD_INFO, &task_dyld, &count) != 0 || task_dyld.address == 0 || task_dyld.size < 176) return -1;
-    if (poc_remote_read(task, task_dyld.address, remote, sizeof(remote)) != 0) return -2;
-    out->all_image_infos = task_dyld.address;
-    out->notifier = poc_strip_pac(poc_load_u64(remote+16));
-    out->cache_slide = poc_load_u64(remote+136);
-    for (unsigned i=0; i != 16; ++i) out->cache_uuid[i] = remote[144+i];
-    out->cache_base = poc_strip_pac(poc_load_u64(remote+160));
+    struct poc_target_dyld_snapshot snapshot;
+    if (poc_target_dyld_snapshot_read(task,&snapshot) != 0) return -1;
+    out->all_image_infos = snapshot.info.address;
+    out->notifier = poc_xpaci(poc_load_u64(snapshot.bytes+POC_DYLD_NOTIFICATION_OFFSET));
+    out->cache_slide = poc_load_u64(snapshot.bytes+POC_DYLD_SHARED_CACHE_SLIDE_OFFSET);
+    for (unsigned i=0; i != 16; ++i) out->cache_uuid[i] = snapshot.bytes[POC_DYLD_SHARED_CACHE_UUID_OFFSET+i];
+    out->cache_base = poc_load_u64(snapshot.bytes+POC_DYLD_SHARED_CACHE_BASE_OFFSET);
     if (!poc_equal16(out->cache_uuid, poc_expected_cache_uuid) || out->cache_base == 0) return -3;
     if (out->cache_base != POC_STATIC_CACHE_BASE + out->cache_slide) return -4;
     out->image_base = out->cache_base + (POC_STATIC_IMAGE_BASE - POC_STATIC_CACHE_BASE);
@@ -164,12 +198,17 @@ static int poc_debug_install(poc_port thread, const poc_u64 *addresses, unsigned
 			items[index] = fmt.Sprintf("0x%02x", value)
 		}
 		fmt.Fprintf(&source, "static const poc_u8 poc_dyld_notifier_preimage[16] = {%s};\n", strings.Join(items, ","))
-		source.WriteString(`static int poc_breakpoint_install_dyld_notifier(struct poc_target_controller *controller, poc_port thread) {
-    struct poc_task_dyld_info task_dyld={0}; poc_u32 count=5; poc_u8 remote[192]={0}, actual[16]; poc_u64 notifier;
-    if (task_info(controller->task, POC_TASK_DYLD_INFO, &task_dyld, &count)!=0 || task_dyld.address==0 || task_dyld.size<24) return -1;
-    if (poc_remote_read(controller->task,task_dyld.address,remote,sizeof(remote))!=0) return -2;
-    notifier=poc_strip_pac(poc_load_u64(remote+16)); if (!notifier || poc_remote_read(controller->task,notifier,actual,sizeof(actual))!=0) return -3;
+		source.WriteString(`static int poc_target_dyld_notifier_resolve(poc_port task, poc_u64 *notifier_out, struct poc_target_dyld_snapshot *snapshot) {
+    poc_u8 actual[16]; poc_u64 notifier;
+    if (poc_target_dyld_snapshot_read(task,snapshot)!=0) return -1;
+    notifier=poc_xpaci(poc_load_u64(snapshot->bytes+POC_DYLD_NOTIFICATION_OFFSET));
+    if (!notifier || poc_remote_read(task,notifier,actual,sizeof(actual))!=0) return -2;
     unsigned diff=0; for (unsigned i=0;i!=16;++i) diff|=actual[i]^poc_dyld_notifier_preimage[i]; if (diff) return -4;
+    *notifier_out=notifier; return 0;
+}
+static int poc_breakpoint_install_dyld_notifier(struct poc_target_controller *controller, poc_port thread) {
+    struct poc_target_dyld_snapshot snapshot; poc_u64 notifier;
+    if (poc_target_dyld_notifier_resolve(controller->task,&notifier,&snapshot)!=0) return -1;
     if (poc_debug_install(thread,&notifier,1)!=0) return -5; controller->temporary_installed=1; return 0;
 }
 `)
@@ -195,7 +234,7 @@ static void poc_debug_disable(struct poc_debug_state64 *debug) {
 }
 static int poc_debug_install(poc_port thread, const poc_u64 *addresses, unsigned count) {
     struct poc_debug_state64 debug; poc_debug_disable(&debug); if (count > 16) return -1;
-    for (unsigned i=0; i != count; ++i) { debug.bvr[i]=poc_strip_pac(addresses[i]); debug.bcr[i]=0x1e5ULL; }
+    for (unsigned i=0; i != count; ++i) { debug.bvr[i]=poc_xpaci(addresses[i]); debug.bcr[i]=0x1e5ULL; }
     return thread_set_state(thread, POC_ARM_DEBUG_STATE64, &debug, POC_ARM_DEBUG_STATE64_COUNT);
 }
 static int poc_breakpoint_temporary_to_final(struct poc_target_controller *controller, poc_port thread, const struct poc_breakpoint_spec *finals, unsigned count) {

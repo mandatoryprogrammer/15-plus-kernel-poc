@@ -102,13 +102,43 @@ func TestTargetControlModuleOwnsResolutionTransitionAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"TASK_DYLD_INFO", "poc_target_image_resolve", "poc_expected_cache_uuid", "poc_strip_pac", "poc_breakpoint_install_dyld_notifier", "poc_validate_breakpoint_preimage", "poc_breakpoint_temporary_to_final", "task_get_exception_ports", "poc_controller_cleanup", "POC_TARGET_CONTROL {\\\"phase\\\""} {
+	for _, required := range []string{"TASK_DYLD_INFO", "POC_TASK_DYLD_INFO_COUNT 5", "poc_target_dyld_snapshot_read", "poc_target_image_resolve", "poc_expected_cache_uuid", "poc_xpaci", "poc_target_dyld_notifier_resolve", "poc_breakpoint_install_dyld_notifier", "poc_validate_breakpoint_preimage", "poc_breakpoint_temporary_to_final", "task_get_exception_ports", "poc_controller_cleanup", "POC_TARGET_CONTROL {\\\"phase\\\""} {
 		if !bytes.Contains(source, []byte(required)) {
 			t.Fatalf("generated target controller lacks %q", required)
 		}
 	}
 	if bytes.Contains(source, []byte("0x0ULL, {0x00")) {
 		t.Fatal("generated target controller lost the exact preimage")
+	}
+}
+
+func TestTargetControlModuleUsesLiveTaskDyldABIAndPinned64BitLayout(t *testing.T) {
+	source, err := renderTargetControlModule(syntheticTargetImageContract(), []string{"target-dyld", "hardware-breakpoints", "structured-cleanup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"#define POC_TASK_DYLD_INFO_COUNT 5",
+		"#define POC_DYLD_ALL_IMAGE_INFOS_READ_SIZE 192",
+		"#define POC_DYLD_ALL_IMAGE_INFOS_MIN_CACHE_SIZE 184",
+		"#define POC_DYLD_SHARED_CACHE_SLIDE_OFFSET 152",
+		"#define POC_DYLD_SHARED_CACHE_UUID_OFFSET 160",
+		"#define POC_DYLD_SHARED_CACHE_BASE_OFFSET 176",
+		"snapshot->count != POC_TASK_DYLD_INFO_COUNT",
+		"snapshot->read_status=-1",
+		"poc_remote_read_exact(task,snapshot->info.address",
+		"__asm__ volatile(\"xpaci %0\"",
+	} {
+		if !bytes.Contains(source, []byte(required)) {
+			t.Fatalf("generated target controller lacks live ABI/layout assertion %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"remote+136", "remote[144+i]", "remote+160", "0x0000ffffffffffffULL",
+	} {
+		if bytes.Contains(source, []byte(forbidden)) {
+			t.Fatalf("generated target controller retained stale layout or pointer mask %q", forbidden)
+		}
 	}
 }
 
