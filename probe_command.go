@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,23 +58,27 @@ type probeNormalizeReport struct {
 }
 
 type probeBuildReport struct {
-	Schema          string                  `json:"schema"`
-	StartedAt       string                  `json:"started_at"`
-	FinishedAt      string                  `json:"finished_at"`
-	Source          string                  `json:"source"`
-	SourceSHA256    string                  `json:"source_sha256,omitempty"`
-	Sysroot         string                  `json:"sysroot"`
-	MinimumIOS      string                  `json:"minimum_ios"`
-	Frameworks      []string                `json:"frameworks,omitempty"`
-	Libraries       []string                `json:"libraries,omitempty"`
-	CompilerArgs    []string                `json:"compiler_args,omitempty"`
-	RawBuildsEqual  bool                    `json:"raw_builds_equal"`
-	RawSHA256       string                  `json:"raw_sha256,omitempty"`
-	RawSize         int64                   `json:"raw_size,omitempty"`
-	NormalizedEqual bool                    `json:"normalized_builds_equal"`
-	Normalized      probeNormalizedIdentity `json:"normalized"`
-	Exit            string                  `json:"exit"`
-	Error           string                  `json:"error,omitempty"`
+	Schema                    string                  `json:"schema"`
+	StartedAt                 string                  `json:"started_at"`
+	FinishedAt                string                  `json:"finished_at"`
+	Source                    string                  `json:"source"`
+	SourceSHA256              string                  `json:"source_sha256,omitempty"`
+	Sysroot                   string                  `json:"sysroot"`
+	MinimumIOS                string                  `json:"minimum_ios"`
+	Frameworks                []string                `json:"frameworks,omitempty"`
+	Libraries                 []string                `json:"libraries,omitempty"`
+	Capabilities              []string                `json:"capabilities,omitempty"`
+	CapabilityEntitlements    []string                `json:"capability_entitlements,omitempty"`
+	CapabilityAuthoritySHA256 string                  `json:"capability_authority_sha256,omitempty"`
+	AuthorityMerged           bool                    `json:"authority_merged"`
+	CompilerArgs              []string                `json:"compiler_args,omitempty"`
+	RawBuildsEqual            bool                    `json:"raw_builds_equal"`
+	RawSHA256                 string                  `json:"raw_sha256,omitempty"`
+	RawSize                   int64                   `json:"raw_size,omitempty"`
+	NormalizedEqual           bool                    `json:"normalized_builds_equal"`
+	Normalized                probeNormalizedIdentity `json:"normalized"`
+	Exit                      string                  `json:"exit"`
+	Error                     string                  `json:"error,omitempty"`
 }
 
 type probeRunEvidence struct {
@@ -278,6 +283,14 @@ func probeNormalizeCommand(ctx context.Context, c *cache, args []string) (runErr
 type probeBuildOptions struct {
 	Source, Sysroot, MinimumIOS, RuntimeLibrary string
 	Frameworks, Libraries, LibraryPaths         []string
+	Capabilities, CapabilityEntitlements        []string
+	CapabilitySource                            string
+}
+
+var probeCapabilityRegistry = map[string][]string{
+	"spawn-subsystem-root": {"com.apple.private.spawn-subsystem-root"},
+	"target-task-control":  {"com.apple.system-task-ports.control"},
+	"launchd-job-manager":  {"com.apple.private.xpc.launchd.job-manager"},
 }
 
 func parseProbeBuild(args []string) (probeBuildOptions, error) {
@@ -285,7 +298,7 @@ func parseProbeBuild(args []string) (probeBuildOptions, error) {
 	minimumSet := false
 	seenFrameworks, seenLibraries := map[string]bool{}, map[string]bool{}
 	if len(args) == 0 {
-		return result, errors.New("usage: probe build SOURCE --sysroot ROOT [--framework NAME]... [--library NAME]... [--min-ios VERSION]")
+		return result, errors.New("usage: probe build SOURCE --sysroot ROOT [--capability NAME]... [--framework NAME]... [--library NAME]... [--min-ios VERSION]")
 	}
 	result.Source, result.MinimumIOS = args[0], canonicalRuntime.IOSVersion
 	for index := 1; index < len(args); index++ {
@@ -324,6 +337,18 @@ func parseProbeBuild(args []string) (probeBuildOptions, error) {
 			}
 			minimumSet = true
 			result.MinimumIOS = value
+		case "--capability":
+			entitlements, ok := probeCapabilityRegistry[value]
+			if !ok {
+				return result, fmt.Errorf("unknown capability %q (known: launchd-job-manager, spawn-subsystem-root, target-task-control)", value)
+			}
+			for _, existing := range result.Capabilities {
+				if existing == value {
+					return result, fmt.Errorf("duplicate capability %q", value)
+				}
+			}
+			result.Capabilities = append(result.Capabilities, value)
+			result.CapabilityEntitlements = append(result.CapabilityEntitlements, entitlements...)
 		default:
 			return result, fmt.Errorf("unknown probe build option %q", args[index-1])
 		}
@@ -359,7 +384,55 @@ func probeCompilerArgs(options probeBuildOptions, output string) []string {
 		args = append(args, "-framework", framework)
 	}
 	args = append(args, options.LibraryPaths...)
-	return append(args, "-o", output, options.Source, options.RuntimeLibrary)
+	args = append(args, "-o", output, options.Source)
+	if options.CapabilitySource != "" {
+		args = append(args, options.CapabilitySource)
+	}
+	return append(args, options.RuntimeLibrary)
+}
+
+var probeSourceEntitlementKey = regexp.MustCompile(`<key>([A-Za-z0-9._-]+)</key>\s*<true\s*/>`)
+
+func mergeProbeCapabilitySource(source []byte, options *probeBuildOptions, scratch string) error {
+	if len(options.Capabilities) == 0 {
+		return nil
+	}
+	keys := map[string]bool{}
+	for _, match := range probeSourceEntitlementKey.FindAllSubmatch(source, -1) {
+		keys[string(match[1])] = true
+	}
+	for _, key := range options.CapabilityEntitlements {
+		keys[key] = true
+	}
+	ordered := make([]string, 0, len(keys))
+	for key := range keys {
+		ordered = append(ordered, key)
+	}
+	sort.Strings(ordered)
+	options.CapabilityEntitlements = ordered
+	marker := []byte(`__attribute__((used, section("__TEXT,__entitlements")))`)
+	if start := bytes.Index(source, marker); start >= 0 {
+		end := bytes.IndexByte(source[start:], ';')
+		if end < 0 {
+			return errors.New("source entitlement declaration has no terminating semicolon")
+		}
+		end += start + 1
+		sanitized := append(append([]byte(nil), source[:start]...), source[end:]...)
+		name := filepath.Join(scratch, "capability-source.c")
+		if err := writeProbeFile(name, sanitized, 0o600); err != nil {
+			return err
+		}
+		options.Source = name
+	}
+	var xml strings.Builder
+	xml.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict>")
+	for _, key := range ordered {
+		fmt.Fprintf(&xml, "<key>%s</key><true/>", key)
+	}
+	xml.WriteString("</dict></plist>")
+	generated := "__attribute__((used, section(\"__TEXT,__entitlements\")))\nstatic const char poc_capability_authority[] = " + strconv.Quote(xml.String()) + ";\n"
+	options.CapabilitySource = filepath.Join(scratch, "capability-authority.c")
+	return writeProbeFile(options.CapabilitySource, []byte(generated), 0o600)
 }
 
 func resolveProbeLinkInputs(options *probeBuildOptions) error {
@@ -466,7 +539,8 @@ func probeBuildCommand(ctx context.Context, c *cache, args []string) (runErr err
 	report := probeBuildReport{
 		Schema: "15-plus-kernel-poc.probe-build.v1", StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		Source: options.Source, Sysroot: options.Sysroot, MinimumIOS: options.MinimumIOS,
-		Frameworks: append([]string(nil), options.Frameworks...), Libraries: append([]string(nil), options.Libraries...), Exit: "incomplete",
+		Frameworks: append([]string(nil), options.Frameworks...), Libraries: append([]string(nil), options.Libraries...),
+		Capabilities: append([]string(nil), options.Capabilities...), Exit: "incomplete",
 	}
 	defer func() {
 		report.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -496,6 +570,19 @@ func probeBuildCommand(ctx context.Context, c *cache, args []string) (runErr err
 		return err
 	}
 	defer os.RemoveAll(scratch)
+	originalSource := options.Source
+	if err = mergeProbeCapabilitySource(sourceBody, &options, scratch); err != nil {
+		return err
+	}
+	report.CapabilityEntitlements = append([]string(nil), options.CapabilityEntitlements...)
+	report.AuthorityMerged = len(options.Capabilities) != 0
+	if options.CapabilitySource != "" {
+		if authority, readErr := os.ReadFile(options.CapabilitySource); readErr != nil {
+			return readErr
+		} else {
+			report.CapabilityAuthoritySHA256 = digest(authority)
+		}
+	}
 	outputs := []string{filepath.Join(scratch, "first", "probe"), filepath.Join(scratch, "second", "probe")}
 	for index, output := range outputs {
 		if err = os.MkdirAll(filepath.Dir(output), 0o700); err != nil {
@@ -528,7 +615,7 @@ func probeBuildCommand(ctx context.Context, c *cache, args []string) (runErr err
 		return fmt.Errorf("compiler output is not reproducible: first sha256=%s second sha256=%s", digest(first), digest(second))
 	}
 	report.RawSHA256, report.RawSize = digest(first), int64(len(first))
-	afterSource, err := os.ReadFile(options.Source)
+	afterSource, err := os.ReadFile(originalSource)
 	if err != nil {
 		return err
 	}
@@ -552,6 +639,18 @@ func probeBuildCommand(ctx context.Context, c *cache, args []string) (runErr err
 		return err
 	}
 	report.Normalized = probeNormalized(preparedFirst, object)
+	for _, required := range options.CapabilityEntitlements {
+		found := false
+		for _, actual := range report.Normalized.EntitlementKeys {
+			if actual == required {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("normalized probe is missing capability entitlement %s", required)
+		}
+	}
 	fmt.Fprintf(c.out, "Built reproducible probe raw_bytes=%d raw_sha256=%s normalized_bytes=%d normalized_sha256=%s cdhash=%s object=%s\n", len(first), digest(first), preparedFirst.Entry.Size, preparedFirst.Entry.SHA256, preparedFirst.Entry.CDHash, object)
 	return nil
 }
@@ -706,6 +805,11 @@ int main(void) {
 }
 
 func probeSupervisorCommand(c *cache, args []string) error {
+	for _, value := range args {
+		if value == "--module" {
+			return probeModuleSupervisorCommand(c, args)
+		}
+	}
 	var spec frameworkSupervisorSpec
 	var destination string
 	spec.TimeoutMS = 2000

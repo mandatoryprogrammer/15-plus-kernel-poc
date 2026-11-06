@@ -75,6 +75,12 @@ go build -mod=vendor -o 15-plus-kernel-poc .
 | `go run . probe build SOURCE --sysroot ROOT` | Compile twice against an exact ProductOS root, require byte-identical raw and normalized outputs, and retain only the content-addressed result. |
 | `go run . probe run FILE -- ARG...` | Run a probe through the same automatic admission, transfer, readback, and cleanup path as every other payload. |
 | `go run . probe supervisor --symbol SYMBOL` | Generate a fork-free pthread supervisor with atomic stage markers and a bounded framework-call deadline. |
+| `go run . probe build PROBE.c --sysroot ROOT --capability target-task-control` | Merge named capabilities into one signed Boolean entitlement authority, build twice, and fail if the normalized result does not contain the exact entitlement keys. |
+| `go run . contract bind --input NAME=FILE` | Bind exact input paths, sizes, SHA-256 identities, Mach-O UUIDs/segments, and requested symbol preimages into one content-addressed contract. |
+| `go run . target image-contract --cache CACHE --image PATH --symbol SYMBOL --dyld DYLD` | Extract one cache image, bind cache/image/dyld UUIDs and symbol preimages, then delete extraction scratch automatically. |
+| `go run . probe supervisor --module target-dyld --module hardware-breakpoints --module structured-cleanup --contract CONTRACT --dest HEADER` | Generate the reusable target-task, dyld-notifier, cache-slide, breakpoint-transition, exception-port, and cleanup controller. |
+| `go run . service-chain profile bind NAME ...` | Bind the exact manifest, native executable, SystemOS cryptex, and trust cache once for later one-command physical runs. |
+| `go run . service-chain run NAME --program PROBE -- ARG...` | Select the normalized program, run the named physical profile, and automatically emit reduced evidence. |
 | `go run . runtime qualify` | Verify the complete boot tuple, whole-system trust context, UI inputs, and admission fingerprint as one contract. |
 | `go run . target index PRODUCTOS_ROOT` | Build a content-addressed inventory of executables, plists, Mach services, any materialized shared/trust caches, explicit filesystem-metadata skips, and non-followed symlinks. |
 | `go run . system-trust import StaticTrustCache.img4` | Import one complete system static-trust IMG4 and merge its whole table into the next volatile boot context. |
@@ -186,6 +192,16 @@ go run . probe build DisplayProbe.c --sysroot /Volumes/ramdisk --min-ios 16.0
 go run . probe run .cache/objects/OBJECT_HASH -- --probe-argument
 ```
 
+Named capabilities remove manual entitlement editing. The current registry is
+`target-task-control` (`com.apple.system-task-ports.control`),
+`spawn-subsystem-root` (`com.apple.private.spawn-subsystem-root`), and
+`launchd-job-manager` (`com.apple.private.xpc.launchd.job-manager`). If the
+source already declares Boolean entitlements, the builder removes that one
+source section from an isolated copy, merges its keys with the named
+capabilities, and emits exactly one authority section. The original source is
+never edited. The build report records the capability names, exact entitlement
+keys, generated-authority SHA-256, and normalized signed entitlement hashes.
+
 The builder invokes the Darwin compiler twice in separate directories, links
 the exact `usr/lib/libSystem.B.dylib` from the selected root, disables UUID and
 implicit signing nondeterminism, and rejects unequal raw or normalized bytes.
@@ -204,6 +220,45 @@ go run . probe supervisor --symbol CARenderServerGetDisplayLogicalBounds \
 The generated program uses a pthread, atomic stage state, and a monotonic
 deadline. It does not fork, and it reports the exact stage that failed to
 return.
+
+For target-owned dyld and hardware-breakpoint work, generate the contracts and
+controller instead of copying addresses, UUIDs, CDHashes, or instruction words:
+
+```sh
+go run . contract bind \
+  --input probe=ProductOSProbe.c \
+  --input dyld=/Volumes/ramdisk/usr/lib/dyld \
+  --symbol dyld=lldb_image_notifier
+
+go run . target image-contract \
+  --cache /path/to/dyld_shared_cache_arm64e \
+  --image /System/Library/Frameworks/QuartzCore.framework/QuartzCore \
+  --symbol CARenderServerRegister \
+  --symbol CARenderServerGetDisplayLogicalBounds \
+  --section __TEXT,__text \
+  --dyld /Volumes/ramdisk/usr/lib/dyld \
+  --dyld-notifier lldb_image_notifier \
+  --dest QuartzCore.contract.json
+
+go run . probe supervisor \
+  --module target-dyld \
+  --module hardware-breakpoints \
+  --module cache-state \
+  --module mach-rpc \
+  --module structured-cleanup \
+  --contract QuartzCore.contract.json \
+  --dest poc-target-control.h
+```
+
+The generated header owns `TASK_DYLD_INFO` reads, remote
+`dyld_all_image_infos` decoding, PAC stripping, cache UUID/base/slide
+validation, static-to-runtime translation, the loose-dyld notifier preimage,
+temporary-notifier to final-breakpoint replacement, prior exception-port
+snapshot/restore, thread debug-state cleanup, task resumption, port release,
+and one-line `POC_TARGET_CONTROL` JSON events. Any UUID or 16-byte instruction
+preimage mismatch fails before changing final breakpoints. `ipsw` is used only
+as a pinned host data-plane parser; its extracted image lives in tool-owned
+scratch and is removed on both success and failure.
 
 ### One-command remote UI
 
@@ -250,6 +305,27 @@ go run . service-chain run default
 go run . service-chain run default --preserve-native /path/to/native-exec=/usr/local/libexec/native-exec -- --diagnostic-argument
 go run . service-chain run default --systemos-cryptex /path/to/SystemOS.ulfo.dmg --systemos-cryptex-trust-cache /path/to/SystemOS.trustcache -- --diagnostic-argument
 ```
+
+Bind a repeated physical topology once, then supply only the research program:
+
+```sh
+go run . service-chain profile bind product-hidd-systemos \
+  --manifest examples/productos-display-chain.json \
+  --preserve-native /path/to/hidd=/usr/local/libexec/productos-hidd.nonui \
+  --systemos-cryptex /path/to/SystemOS.ulfo.dmg \
+  --systemos-cryptex-trust-cache /path/to/SystemOS.trustcache
+
+go run . service-chain run product-hidd-systemos --program /path/to/probe -- --probe-mode
+```
+
+Every profile input is absolute and hash-bound; a changed or missing file is
+rejected before device contact. `--program` performs the normal deterministic
+program import, so CDHash generation and exact staging are not separate agent
+steps. At terminal cleanup, the command writes
+`.cache/private/service-chain-evidence-latest.json` with the outcome,
+program/admission/cryptex/trust identities, selected structured markers,
+payload transfer/readback report, and cleanup classification. Only the newest
+content-addressed reduced evidence object is retained.
 
 The current registry contains the three physically qualified ProductOS jobs:
 `appledisplayplatformd`, `hidd.nonui`, and `SwitchBoard`. The launcher creates

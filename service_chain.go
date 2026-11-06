@@ -70,6 +70,7 @@ type serviceChainReport struct {
 	RecoveryCleanup               string                   `json:"recovery_cleanup,omitempty"`
 	Markers                       []string                 `json:"markers,omitempty"`
 	OutputTruncated               bool                     `json:"output_truncated,omitempty"`
+	ReducedEvidence               string                   `json:"reduced_evidence,omitempty"`
 	Exit                          string                   `json:"exit"`
 	Error                         string                   `json:"error,omitempty"`
 }
@@ -392,8 +393,12 @@ func runServiceChain(ctx context.Context, c *cache, manifestPath string,
 		} else {
 			report.Exit = "zero"
 		}
+		report.ReducedEvidence = filepath.Join(c.root, "private", "service-chain-evidence-latest.json")
 		if reportErr := writePrivateJSON(c, "service-chain-run", report); reportErr != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("write service-chain report: %w", reportErr))
+		}
+		if evidenceErr := reduceServiceChainEvidence(c, report); evidenceErr != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("reduce service-chain evidence: %w", evidenceErr))
 		}
 	}()
 	fmt.Fprintf(c.out, "Launching service chain %q in order %s through the imported ProductOS root launcher (target execution deadline %s)\n", manifest.Name, strings.Join(manifest.Services, " -> "), executionTimeout)
@@ -451,6 +456,9 @@ func runServiceChain(ctx context.Context, c *cache, manifestPath string,
 }
 
 func serviceChainCommand(ctx context.Context, c *cache, args []string) error {
+	if len(args) >= 1 && args[0] == "profile" {
+		return serviceChainProfileCommand(ctx, c, args[1:])
+	}
 	if len(args) == 2 && args[0] == "validate" {
 		manifest, hash, err := loadServiceChainManifest(args[1])
 		if err != nil {
@@ -460,17 +468,42 @@ func serviceChainCommand(ctx context.Context, c *cache, args []string) error {
 		return nil
 	}
 	if len(args) >= 2 && args[0] == "run" {
-		manifestPath, nativeExecutable, systemOSCryptexPath, systemOSCryptexTrustPath, programArguments, err := parseServiceChainRunArguments(args[1:])
+		runArgs, programPath, err := extractServiceChainProgram(args[1:])
+		if err != nil {
+			return err
+		}
+		manifestPath, nativeExecutable, systemOSCryptexPath, systemOSCryptexTrustPath, programArguments, err := parseServiceChainRunArguments(runArgs)
 		if err != nil {
 			return err
 		}
 		if manifestPath == "default" {
 			manifestPath = filepath.Join(filepath.Dir(c.root), "examples", "productos-display-chain.json")
+		} else if profile, ok, profileErr := loadServiceChainProfile(c, manifestPath); profileErr != nil {
+			return profileErr
+		} else if ok {
+			manifestPath = profile.Manifest.Path
+			if nativeExecutable != nil || systemOSCryptexPath != "" || systemOSCryptexTrustPath != "" {
+				return errors.New("named profile inputs cannot be overridden")
+			}
+			if profile.PreservedNative != nil {
+				nativeExecutable = &[2]string{profile.PreservedNative.Path, profile.PreservedDestination}
+			}
+			if profile.SystemOSCryptex != nil {
+				systemOSCryptexPath = profile.SystemOSCryptex.Path
+			}
+			if profile.SystemOSTrust != nil {
+				systemOSCryptexTrustPath = profile.SystemOSTrust.Path
+			}
+		}
+		if programPath != "" {
+			if err = importUIProgram(ctx, c, programPath, ""); err != nil {
+				return fmt.Errorf("select service-chain program: %w", err)
+			}
 		}
 		return runServiceChain(ctx, c, manifestPath, nativeExecutable,
 			systemOSCryptexPath, systemOSCryptexTrustPath, programArguments)
 	}
-	return errors.New("usage: service-chain validate MANIFEST | service-chain run MANIFEST|default [--preserve-native FILE=DEST] [--systemos-cryptex IMAGE --systemos-cryptex-trust-cache FILE] [-- PROGRAM-ARG...]")
+	return errors.New("usage: service-chain profile bind|show ... | service-chain validate MANIFEST | service-chain run MANIFEST|PROFILE|default [--program FILE] [--preserve-native FILE=DEST] [--systemos-cryptex IMAGE --systemos-cryptex-trust-cache FILE] [-- PROGRAM-ARG...]")
 }
 
 func parseServiceChainRunArguments(args []string) (manifestPath string,

@@ -45,7 +45,7 @@ func main() {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: 15-plus-kernel-poc shell | exec -- COMMAND | pull REMOTE LOCAL | ui ... | payload ... | probe ... | service-chain ... | mach-service ... | runtime qualify | target index | system-trust ... | cache gc | doctor | reset")
+		return errors.New("usage: 15-plus-kernel-poc shell | exec -- COMMAND | pull REMOTE LOCAL | ui ... | payload ... | probe ... | contract bind | service-chain ... | mach-service ... | runtime qualify | target ... | system-trust ... | cache gc | doctor | reset")
 	}
 	root, err := projectRoot()
 	if err != nil {
@@ -105,16 +105,15 @@ func run(ctx context.Context, args []string) error {
 		return machServiceCommand(ctx, cache, args[1:])
 	case "probe":
 		return probeCommand(ctx, cache, args[1:])
+	case "contract":
+		return contractCommand(ctx, cache, args[1:])
 	case "runtime":
 		if len(args) >= 2 && args[1] == "qualify" {
 			return runtimeQualifyCommand(ctx, cache, args[2:])
 		}
 		return errors.New("usage: runtime qualify [PRODUCTOS_ROOT]")
 	case "target":
-		if len(args) >= 2 && args[1] == "index" {
-			return targetIndexCommand(ctx, cache, args[2:])
-		}
-		return errors.New("usage: target index PRODUCTOS_ROOT")
+		return targetCommand(ctx, cache, args[1:])
 	case "cache":
 		if len(args) >= 2 && args[1] == "gc" {
 			return cacheGCCommand(cache, args[2:])
