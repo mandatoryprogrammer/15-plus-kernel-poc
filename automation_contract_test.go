@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -93,9 +94,20 @@ func sortStringsEqual(a, b []string) bool {
 }
 
 func syntheticTargetImageContract() targetImageContract {
-	return targetImageContract{Schema: targetImageContractSchema, CacheUUID: "11CAD49B-2122-31EE-8B7C-CCF1BC3A6728", ImageUUID: "EC544EA0-5157-34A8-A85A-0F3BCCE6D272", CacheStaticBase: 0x180000000, StaticBase: 0x183ae8000,
-		LooseDyld: &targetLooseDyld{Path: "/usr/lib/dyld", UUID: "E1111111-2222-3333-4444-555555555555", StaticBase: 0x180000000, Notifier: targetImageSymbol{Name: "_lldb_image_notifier", Address: 0x1801317e0, ImageOffset: 0x1317e0, PreimageHex: "c0035fd6d00080d2011000d403010054"}},
-		Symbols:   []targetImageSymbol{{Name: "_CARenderServerRegister", Address: 0x183d46e2c, ImageOffset: 0x25ee2c, FileOffset: 0x25ee2c, PreimageHex: "76d1ff17ded4ff177f2303d5fc6fbca9", PreimageSHA256: "ac03f0f8009206b1fa27a3bb0008c2257bd2f644fa30e3f4ac3701a3acecf3b9"}}}
+	contract := targetImageContract{Schema: targetImageContractSchema, CacheUUID: "11CAD49B-2122-31EE-8B7C-CCF1BC3A6728", ImageUUID: "EC544EA0-5157-34A8-A85A-0F3BCCE6D272", CacheStaticBase: 0x180000000, StaticBase: 0x183ae8000,
+		LooseDyld: &targetLooseDyld{Path: "/usr/lib/dyld", UUID: "E1111111-2222-3333-4444-555555555555", StaticBase: 0x180000000, StaticEnd: 0x180300000,
+			AllImageInfos:       targetImageSymbol{Name: "_dyld_all_image_infos", Address: 0x1801ac0d0, ImageOffset: 0x1ac0d0, PreimageHex: "11000000000000000000000000000000"},
+			NotificationEncoded: 0x801000000001b7e0,
+			Notifier:            targetImageSymbol{Name: "_lldb_image_notifier", Address: 0x1801317e0, ImageOffset: 0x1317e0, PreimageHex: "c0035fd6d00080d2011000d403010054"}},
+		Symbols: []targetImageSymbol{{Name: "_CARenderServerRegister", Address: 0x183d46e2c, ImageOffset: 0x25ee2c, FileOffset: 0x25ee2c, PreimageHex: "76d1ff17ded4ff177f2303d5fc6fbca9", PreimageSHA256: "ac03f0f8009206b1fa27a3bb0008c2257bd2f644fa30e3f4ac3701a3acecf3b9"}}}
+	for _, symbol := range []*targetImageSymbol{&contract.LooseDyld.AllImageInfos, &contract.LooseDyld.Notifier} {
+		preimage, err := hex.DecodeString(symbol.PreimageHex)
+		if err != nil {
+			panic(err)
+		}
+		symbol.PreimageSHA256 = digest(preimage)
+	}
+	return contract
 }
 
 func TestTargetControlModuleOwnsResolutionTransitionAndCleanup(t *testing.T) {
@@ -103,13 +115,47 @@ func TestTargetControlModuleOwnsResolutionTransitionAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"TASK_DYLD_INFO", "POC_TASK_DYLD_INFO_COUNT 5", "poc_target_dyld_snapshot_read", "poc_target_image_resolve", "poc_expected_cache_uuid", "poc_xpaci", "poc_target_dyld_notifier_resolve", "poc_breakpoint_install_dyld_notifier", "poc_breakpoints[POC_BREAKPOINT_COUNT]", "poc_validate_breakpoint_preimage", "poc_breakpoint_temporary_to_final", "task_get_exception_ports", "poc_controller_cleanup", "POC_TARGET_CONTROL {\\\"phase\\\""} {
+	for _, required := range []string{"TASK_DYLD_INFO", "POC_TASK_DYLD_INFO_COUNT 5", "poc_target_dyld_snapshot_read", "poc_target_image_resolve", "poc_expected_cache_uuid", "poc_xpaci", "poc_target_dyld_notifier_resolve", "poc_target_dyld_notifier_from_snapshot", "POC_LOOSE_DYLD_ALL_IMAGE_INFOS", "POC_LOOSE_DYLD_NOTIFICATION_ENCODED", "snapshot->notification_raw != POC_LOOSE_DYLD_NOTIFICATION_ENCODED", "snapshot->info.address < POC_LOOSE_DYLD_ALL_IMAGE_INFOS", "slide=snapshot->info.address-POC_LOOSE_DYLD_ALL_IMAGE_INFOS", "slide & (POC_LOOSE_DYLD_SLIDE_ALIGNMENT-1)", "POC_LOOSE_DYLD_STATIC_END > ~(poc_u64)0-slide", "notifier=POC_LOOSE_DYLD_NOTIFIER+slide", "notifier+sizeof(actual) > runtime_end", "poc_remote_read(task,notifier,actual,sizeof(actual))", "actual[i]^poc_dyld_notifier_preimage[i]", "poc_target_dyld_notifier_from_snapshot(task,&snapshot,&out->notifier)", "poc_breakpoint_install_dyld_notifier", "poc_breakpoints[POC_BREAKPOINT_COUNT]", "poc_validate_breakpoint_preimage", "poc_breakpoint_temporary_to_final", "task_get_exception_ports", "poc_controller_cleanup", "POC_TARGET_CONTROL {\\\"phase\\\""} {
 		if !bytes.Contains(source, []byte(required)) {
 			t.Fatalf("generated target controller lacks %q", required)
 		}
 	}
 	if bytes.Contains(source, []byte("0x0ULL, {0x00")) {
 		t.Fatal("generated target controller lost the exact preimage")
+	}
+	if bytes.Contains(source, []byte("notifier=poc_xpaci(poc_load_u64(snapshot->bytes+POC_DYLD_NOTIFICATION_OFFSET))")) {
+		t.Fatal("generated target controller still dereferences the encoded loose-dyld notification field")
+	}
+	if bytes.Contains(source, []byte("out->notifier = poc_xpaci(snapshot.notification_raw)")) {
+		t.Fatal("generated target image resolver retained encoded-field notifier authority")
+	}
+}
+
+func TestTargetControlModuleLooseDyldDerivationMutationsFailClosed(t *testing.T) {
+	tests := []struct {
+		name   string
+		want   string
+		mutate func(*targetLooseDyld)
+	}{
+		{"mapped range", "mapped range", func(value *targetLooseDyld) { value.StaticEnd = value.StaticBase }},
+		{"all-image-info range", "all-image-info range", func(value *targetLooseDyld) { value.AllImageInfos.Address = value.StaticBase - 1 }},
+		{"all-image-info offset", "all-image-info offset", func(value *targetLooseDyld) { value.AllImageInfos.ImageOffset++ }},
+		{"all-image-info preimage", "all-image-info preimage", func(value *targetLooseDyld) { value.AllImageInfos.PreimageHex = "00" }},
+		{"all-image-info preimage hash", "all-image-info preimage hash", func(value *targetLooseDyld) { value.AllImageInfos.PreimageSHA256 = strings.Repeat("0", 64) }},
+		{"encoded notification", "encoded notification", func(value *targetLooseDyld) { value.NotificationEncoded = 0 }},
+		{"notifier range", "notifier range", func(value *targetLooseDyld) { value.Notifier.Address = value.StaticEnd }},
+		{"notifier offset", "notifier offset", func(value *targetLooseDyld) { value.Notifier.ImageOffset++ }},
+		{"notifier preimage", "notifier preimage", func(value *targetLooseDyld) { value.Notifier.PreimageHex = "00" }},
+		{"notifier preimage hash", "notifier preimage hash", func(value *targetLooseDyld) { value.Notifier.PreimageSHA256 = strings.Repeat("0", 64) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			contract := syntheticTargetImageContract()
+			test.mutate(contract.LooseDyld)
+			if _, err := renderTargetControlModule(contract, []string{"target-dyld"}); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("mutation error=%v want site containing %q", err, test.want)
+			}
+		})
 	}
 }
 

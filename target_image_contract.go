@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"debug/macho"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -17,7 +18,7 @@ import (
 	"time"
 )
 
-const targetImageContractSchema = "15-plus-kernel-poc.target-image-contract.v1"
+const targetImageContractSchema = "15-plus-kernel-poc.target-image-contract.v2"
 
 type targetImageSection struct {
 	Segment    string `json:"segment"`
@@ -63,12 +64,15 @@ type targetSourceReport struct {
 }
 
 type targetLooseDyld struct {
-	Path       string            `json:"path"`
-	Bytes      int64             `json:"bytes"`
-	SHA256     string            `json:"sha256"`
-	UUID       string            `json:"uuid"`
-	StaticBase uint64            `json:"static_base"`
-	Notifier   targetImageSymbol `json:"notifier"`
+	Path                string            `json:"path"`
+	Bytes               int64             `json:"bytes"`
+	SHA256              string            `json:"sha256"`
+	UUID                string            `json:"uuid"`
+	StaticBase          uint64            `json:"static_base"`
+	StaticEnd           uint64            `json:"static_end"`
+	AllImageInfos       targetImageSymbol `json:"all_image_infos"`
+	NotificationEncoded uint64            `json:"notification_encoded"`
+	Notifier            targetImageSymbol `json:"notifier"`
 }
 
 type targetImageContractOptions struct {
@@ -239,6 +243,37 @@ func targetReportRoleSymbols(contract targetImageContract, reportBody, imageBody
 	return symbols, report.Schema, nil
 }
 
+func exactLooseDyldSymbol(file *macho.File, name string) (macho.Symbol, error) {
+	var result macho.Symbol
+	count := 0
+	want := strings.TrimPrefix(name, "_")
+	for _, symbol := range file.Symtab.Syms {
+		if strings.TrimPrefix(symbol.Name, "_") != want {
+			continue
+		}
+		result = symbol
+		count++
+	}
+	if count != 1 {
+		return result, fmt.Errorf("loose dyld symbol %q count=%d", name, count)
+	}
+	return result, nil
+}
+
+func looseDyldTargetSymbol(file *macho.File, body []byte, base uint64, symbol macho.Symbol) (targetImageSymbol, error) {
+	offset, err := machoAddressToOffset(file, symbol.Value, 16)
+	if err != nil {
+		return targetImageSymbol{}, err
+	}
+	if symbol.Value < base || offset+16 > uint64(len(body)) {
+		return targetImageSymbol{}, fmt.Errorf("loose dyld symbol %q escaped its image", symbol.Name)
+	}
+	preimage := body[offset : offset+16]
+	return targetImageSymbol{Name: symbol.Name, Address: symbol.Value,
+		ImageOffset: symbol.Value - base, FileOffset: offset,
+		PreimageHex: hex.EncodeToString(preimage), PreimageSHA256: digest(preimage)}, nil
+}
+
 func inspectLooseDyld(path, notifier string) (*targetLooseDyld, error) {
 	abs, size, sha, err := readRegularIdentity(path)
 	if err != nil {
@@ -253,30 +288,51 @@ func inspectLooseDyld(path, notifier string) (*targetLooseDyld, error) {
 	if err != nil {
 		return nil, err
 	}
-	base := ^uint64(0)
+	base, end := ^uint64(0), uint64(0)
 	for _, load := range file.Loads {
-		if segment, ok := load.(*macho.Segment); ok && segment.Filesz != 0 && segment.Addr < base {
-			base = segment.Addr
-		}
-	}
-	if base == ^uint64(0) || file.Symtab == nil {
-		return nil, errors.New("loose dyld lacks a file-backed segment or symbol table")
-	}
-	for _, symbol := range file.Symtab.Syms {
-		if symbol.Name != notifier && strings.TrimPrefix(symbol.Name, "_") != strings.TrimPrefix(notifier, "_") {
+		segment, ok := load.(*macho.Segment)
+		if !ok || segment.Memsz == 0 || segment.Addr+segment.Memsz < segment.Addr {
 			continue
 		}
-		offset, mapErr := machoAddressToOffset(file, symbol.Value, 16)
-		if mapErr != nil {
-			return nil, mapErr
+		if segment.Filesz != 0 && segment.Addr < base {
+			base = segment.Addr
 		}
-		if offset+16 > uint64(len(body)) {
-			return nil, errors.New("loose dyld notifier preimage escaped file")
+		if segment.Addr+segment.Memsz > end {
+			end = segment.Addr + segment.Memsz
 		}
-		preimage := body[offset : offset+16]
-		return &targetLooseDyld{Path: abs, Bytes: size, SHA256: sha, UUID: machoUUID(file), StaticBase: base, Notifier: targetImageSymbol{Name: symbol.Name, Address: symbol.Value, ImageOffset: symbol.Value - base, FileOffset: offset, PreimageHex: hex.EncodeToString(preimage), PreimageSHA256: digest(preimage)}}, nil
 	}
-	return nil, fmt.Errorf("loose dyld notifier %q is absent from %s", notifier, abs)
+	if base == ^uint64(0) || end <= base || file.Symtab == nil {
+		return nil, errors.New("loose dyld lacks a file-backed segment or symbol table")
+	}
+	allInfoSymbol, err := exactLooseDyldSymbol(file, "dyld_all_image_infos")
+	if err != nil {
+		return nil, err
+	}
+	notifierSymbol, err := exactLooseDyldSymbol(file, notifier)
+	if err != nil {
+		return nil, err
+	}
+	allInfo, err := looseDyldTargetSymbol(file, body, base, allInfoSymbol)
+	if err != nil {
+		return nil, err
+	}
+	notifierInfo, err := looseDyldTargetSymbol(file, body, base, notifierSymbol)
+	if err != nil {
+		return nil, err
+	}
+	fieldOffset, err := machoAddressToOffset(file, allInfoSymbol.Value+16, 8)
+	if err != nil || fieldOffset+8 > uint64(len(body)) {
+		return nil, errors.New("loose dyld notification field escaped file")
+	}
+	encoded := binary.LittleEndian.Uint64(body[fieldOffset : fieldOffset+8])
+	if encoded == 0 || allInfo.Address < base || allInfo.Address+192 < allInfo.Address ||
+		allInfo.Address+192 > end || notifierInfo.Address < base ||
+		notifierInfo.Address+16 < notifierInfo.Address || notifierInfo.Address+16 > end {
+		return nil, errors.New("loose dyld target symbols are outside the mapped range")
+	}
+	return &targetLooseDyld{Path: abs, Bytes: size, SHA256: sha, UUID: machoUUID(file),
+		StaticBase: base, StaticEnd: end, AllImageInfos: allInfo,
+		NotificationEncoded: encoded, Notifier: notifierInfo}, nil
 }
 
 func dyldCacheIdentity(path string) (string, uint64, error) {

@@ -45,6 +45,9 @@ func loadTargetImageContract(path string) (targetImageContract, string, string, 
 	if contract.Schema != targetImageContractSchema || contract.CacheUUID == "" || contract.ImageUUID == "" || len(contract.Symbols) == 0 {
 		return contract, "", "", errors.New("target image contract is incomplete")
 	}
+	if err = validateLooseDyldContract(contract.LooseDyld); err != nil {
+		return contract, "", "", err
+	}
 	return contract, abs, sha, nil
 }
 
@@ -60,9 +63,56 @@ func uuidCBytes(value string) (string, error) {
 	return strings.Join(items, ","), nil
 }
 
+func validateLooseDyldContract(loose *targetLooseDyld) error {
+	if loose == nil {
+		return nil
+	}
+	if loose.StaticEnd <= loose.StaticBase {
+		return errors.New("loose dyld mapped range is invalid")
+	}
+	if strings.TrimPrefix(loose.AllImageInfos.Name, "_") != "dyld_all_image_infos" ||
+		loose.AllImageInfos.Address < loose.StaticBase ||
+		loose.AllImageInfos.Address+192 < loose.AllImageInfos.Address ||
+		loose.AllImageInfos.Address+192 > loose.StaticEnd {
+		return errors.New("loose dyld all-image-info range is invalid")
+	}
+	if loose.AllImageInfos.ImageOffset != loose.AllImageInfos.Address-loose.StaticBase {
+		return errors.New("loose dyld all-image-info offset is invalid")
+	}
+	if err := validateLooseDyldPreimage("all-image-info", loose.AllImageInfos); err != nil {
+		return err
+	}
+	if loose.NotificationEncoded == 0 {
+		return errors.New("loose dyld encoded notification is invalid")
+	}
+	if strings.TrimPrefix(loose.Notifier.Name, "_") == "" ||
+		loose.Notifier.Address < loose.StaticBase || loose.Notifier.Address+16 < loose.Notifier.Address ||
+		loose.Notifier.Address+16 > loose.StaticEnd {
+		return errors.New("loose dyld notifier range is invalid")
+	}
+	if loose.Notifier.ImageOffset != loose.Notifier.Address-loose.StaticBase {
+		return errors.New("loose dyld notifier offset is invalid")
+	}
+	return validateLooseDyldPreimage("notifier", loose.Notifier)
+}
+
+func validateLooseDyldPreimage(name string, symbol targetImageSymbol) error {
+	decoded, err := hex.DecodeString(symbol.PreimageHex)
+	if err != nil || len(decoded) != 16 {
+		return fmt.Errorf("loose dyld %s preimage is invalid", name)
+	}
+	if symbol.PreimageSHA256 == "" || digest(decoded) != symbol.PreimageSHA256 {
+		return fmt.Errorf("loose dyld %s preimage hash is invalid", name)
+	}
+	return nil
+}
+
 func renderTargetControlModule(contract targetImageContract, modules []string) ([]byte, error) {
 	cacheUUID, err := uuidCBytes(contract.CacheUUID)
 	if err != nil {
+		return nil, err
+	}
+	if err = validateLooseDyldContract(contract.LooseDyld); err != nil {
 		return nil, err
 	}
 	imageUUID, err := uuidCBytes(contract.ImageUUID)
@@ -136,6 +186,8 @@ struct poc_target_dyld_snapshot {
     poc_kr task_info_status;
     poc_kr read_status;
     poc_u64 read_bytes;
+    poc_u64 notification_raw;
+    poc_u64 loose_dyld_slide;
     poc_u8 bytes[POC_DYLD_ALL_IMAGE_INFOS_READ_SIZE];
 };
 static poc_u64 poc_load_u64(const poc_u8 *p) {
@@ -171,27 +223,6 @@ static int poc_target_dyld_snapshot_read(poc_port task, struct poc_target_dyld_s
 	fmt.Fprintf(&source, "static const poc_u8 poc_expected_cache_uuid[16] = {%s};\n", cacheUUID)
 	fmt.Fprintf(&source, "static const poc_u8 poc_expected_image_uuid[16] = {%s};\n", imageUUID)
 	fmt.Fprintf(&source, "#define POC_STATIC_CACHE_BASE 0x%xULL\n#define POC_STATIC_IMAGE_BASE 0x%xULL\n", contract.CacheStaticBase, contract.StaticBase)
-	source.WriteString(`static int poc_target_image_resolve(poc_port task, struct poc_target_image *out) {
-    struct poc_target_dyld_snapshot snapshot;
-    if (poc_target_dyld_snapshot_read(task,&snapshot) != 0) return -1;
-    out->all_image_infos = snapshot.info.address;
-    out->notifier = poc_xpaci(poc_load_u64(snapshot.bytes+POC_DYLD_NOTIFICATION_OFFSET));
-    out->cache_slide = poc_load_u64(snapshot.bytes+POC_DYLD_SHARED_CACHE_SLIDE_OFFSET);
-    for (unsigned i=0; i != 16; ++i) out->cache_uuid[i] = snapshot.bytes[POC_DYLD_SHARED_CACHE_UUID_OFFSET+i];
-    out->cache_base = poc_load_u64(snapshot.bytes+POC_DYLD_SHARED_CACHE_BASE_OFFSET);
-    if (!poc_equal16(out->cache_uuid, poc_expected_cache_uuid) || out->cache_base == 0) return -3;
-    if (out->cache_slide > POC_SHARED_CACHE_MAX_SLIDE ||
-        (out->cache_slide & (POC_SHARED_CACHE_SLIDE_ALIGNMENT-1)) != 0) return -4;
-    if (out->cache_base != POC_STATIC_CACHE_BASE + out->cache_slide) return -5;
-    out->image_base = out->cache_base + (POC_STATIC_IMAGE_BASE - POC_STATIC_CACHE_BASE);
-    return out->notifier ? 0 : -6;
-}
-static poc_u64 poc_static_to_runtime(const struct poc_target_image *image, poc_u64 static_address) {
-    return image->cache_base + (static_address - POC_STATIC_CACHE_BASE);
-}
-struct poc_breakpoint_spec { const char *name; poc_u64 static_address; poc_u8 preimage[16]; };
-static int poc_debug_install(poc_port thread, const poc_u64 *addresses, unsigned count);
-`)
 	if contract.LooseDyld != nil {
 		preimage, decodeErr := hex.DecodeString(contract.LooseDyld.Notifier.PreimageHex)
 		if decodeErr != nil || len(preimage) != 16 {
@@ -201,14 +232,66 @@ static int poc_debug_install(poc_port thread, const poc_u64 *addresses, unsigned
 		for index, value := range preimage {
 			items[index] = fmt.Sprintf("0x%02x", value)
 		}
+		fmt.Fprintf(&source, "#define POC_LOOSE_DYLD_STATIC_START 0x%xULL\n", contract.LooseDyld.StaticBase)
+		fmt.Fprintf(&source, "#define POC_LOOSE_DYLD_STATIC_END 0x%xULL\n", contract.LooseDyld.StaticEnd)
+		fmt.Fprintf(&source, "#define POC_LOOSE_DYLD_ALL_IMAGE_INFOS 0x%xULL\n", contract.LooseDyld.AllImageInfos.Address)
+		fmt.Fprintf(&source, "#define POC_LOOSE_DYLD_NOTIFIER 0x%xULL\n", contract.LooseDyld.Notifier.Address)
+		fmt.Fprintf(&source, "#define POC_LOOSE_DYLD_NOTIFICATION_ENCODED 0x%xULL\n", contract.LooseDyld.NotificationEncoded)
+		source.WriteString("#define POC_LOOSE_DYLD_SLIDE_ALIGNMENT 0x4000ULL\n")
 		fmt.Fprintf(&source, "static const poc_u8 poc_dyld_notifier_preimage[16] = {%s};\n", strings.Join(items, ","))
-		source.WriteString(`static int poc_target_dyld_notifier_resolve(poc_port task, poc_u64 *notifier_out, struct poc_target_dyld_snapshot *snapshot) {
-    poc_u8 actual[16]; poc_u64 notifier;
-    if (poc_target_dyld_snapshot_read(task,snapshot)!=0) return -1;
-    notifier=poc_xpaci(poc_load_u64(snapshot->bytes+POC_DYLD_NOTIFICATION_OFFSET));
-    if (!notifier || poc_remote_read(task,notifier,actual,sizeof(actual))!=0) return -2;
-    unsigned diff=0; for (unsigned i=0;i!=16;++i) diff|=actual[i]^poc_dyld_notifier_preimage[i]; if (diff) return -4;
+		source.WriteString(`static int poc_target_dyld_notifier_from_snapshot(poc_port task, const struct poc_target_dyld_snapshot *snapshot, poc_u64 *notifier_out) {
+    poc_u8 actual[16]; poc_u64 slide, notifier, runtime_start, runtime_end;
+    if (snapshot->notification_raw != POC_LOOSE_DYLD_NOTIFICATION_ENCODED) return -1;
+    if (snapshot->info.address < POC_LOOSE_DYLD_ALL_IMAGE_INFOS) return -2;
+    slide=snapshot->info.address-POC_LOOSE_DYLD_ALL_IMAGE_INFOS;
+    if ((slide & (POC_LOOSE_DYLD_SLIDE_ALIGNMENT-1)) != 0) return -3;
+    if (POC_LOOSE_DYLD_STATIC_END > ~(poc_u64)0-slide ||
+        POC_LOOSE_DYLD_NOTIFIER > ~(poc_u64)0-slide) return -4;
+    runtime_start=POC_LOOSE_DYLD_STATIC_START+slide;
+    runtime_end=POC_LOOSE_DYLD_STATIC_END+slide;
+    notifier=POC_LOOSE_DYLD_NOTIFIER+slide;
+    if (notifier < runtime_start || notifier+sizeof(actual) < notifier ||
+        notifier+sizeof(actual) > runtime_end ||
+        poc_remote_read(task,notifier,actual,sizeof(actual))!=0) return -5;
+    unsigned diff=0; for (unsigned i=0;i!=16;++i) diff|=actual[i]^poc_dyld_notifier_preimage[i]; if (diff) return -6;
     *notifier_out=notifier; return 0;
+}
+`)
+	}
+	source.WriteString(`static int poc_target_image_resolve(poc_port task, struct poc_target_image *out) {
+    struct poc_target_dyld_snapshot snapshot;
+    if (poc_target_dyld_snapshot_read(task,&snapshot) != 0) return -1;
+    out->all_image_infos = snapshot.info.address;
+    snapshot.notification_raw=poc_load_u64(snapshot.bytes+POC_DYLD_NOTIFICATION_OFFSET);
+`)
+	if contract.LooseDyld != nil {
+		source.WriteString("    if (poc_target_dyld_notifier_from_snapshot(task,&snapshot,&out->notifier) != 0) return -2;\n")
+	} else {
+		source.WriteString("    out->notifier = poc_xpaci(snapshot.notification_raw); if (!out->notifier) return -2;\n")
+	}
+	source.WriteString(`    out->cache_slide = poc_load_u64(snapshot.bytes+POC_DYLD_SHARED_CACHE_SLIDE_OFFSET);
+    for (unsigned i=0; i != 16; ++i) out->cache_uuid[i] = snapshot.bytes[POC_DYLD_SHARED_CACHE_UUID_OFFSET+i];
+    out->cache_base = poc_load_u64(snapshot.bytes+POC_DYLD_SHARED_CACHE_BASE_OFFSET);
+    if (!poc_equal16(out->cache_uuid, poc_expected_cache_uuid) || out->cache_base == 0) return -3;
+    if (out->cache_slide > POC_SHARED_CACHE_MAX_SLIDE ||
+        (out->cache_slide & (POC_SHARED_CACHE_SLIDE_ALIGNMENT-1)) != 0) return -4;
+    if (out->cache_base != POC_STATIC_CACHE_BASE + out->cache_slide) return -5;
+    out->image_base = out->cache_base + (POC_STATIC_IMAGE_BASE - POC_STATIC_CACHE_BASE);
+    return 0;
+}
+static poc_u64 poc_static_to_runtime(const struct poc_target_image *image, poc_u64 static_address) {
+    return image->cache_base + (static_address - POC_STATIC_CACHE_BASE);
+}
+struct poc_breakpoint_spec { const char *name; poc_u64 static_address; poc_u8 preimage[16]; };
+static int poc_debug_install(poc_port thread, const poc_u64 *addresses, unsigned count);
+`)
+	if contract.LooseDyld != nil {
+		source.WriteString(`static int poc_target_dyld_notifier_resolve(poc_port task, poc_u64 *notifier_out, struct poc_target_dyld_snapshot *snapshot) {
+    if (poc_target_dyld_snapshot_read(task,snapshot)!=0) return -1;
+    snapshot->notification_raw=poc_load_u64(snapshot->bytes+POC_DYLD_NOTIFICATION_OFFSET);
+    if (poc_target_dyld_notifier_from_snapshot(task,snapshot,notifier_out)!=0) return -2;
+    snapshot->loose_dyld_slide=snapshot->info.address-POC_LOOSE_DYLD_ALL_IMAGE_INFOS;
+    return 0;
 }
 static int poc_breakpoint_install_dyld_notifier(struct poc_target_controller *controller, poc_port thread) {
     struct poc_target_dyld_snapshot snapshot; poc_u64 notifier;

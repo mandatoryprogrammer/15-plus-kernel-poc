@@ -77,7 +77,7 @@ go build -mod=vendor -o 15-plus-kernel-poc .
 | `go run . probe supervisor --symbol SYMBOL` | Generate a fork-free pthread supervisor with atomic stage markers and a bounded framework-call deadline. |
 | `go run . probe build PROBE.c --sysroot ROOT --capability target-task-control` | Merge named capabilities into one signed Boolean entitlement authority, build twice, and fail if the normalized result does not contain the exact entitlement keys. |
 | `go run . contract bind --input NAME=FILE` | Bind exact input paths, sizes, SHA-256 identities, Mach-O UUIDs/segments, and requested symbol preimages into one content-addressed contract. |
-| `go run . target image-contract --cache CACHE --image PATH --symbol SYMBOL --dyld DYLD` | Extract one cache image, bind cache/image/dyld UUIDs and symbol preimages, then delete extraction scratch automatically. |
+| `go run . target image-contract --cache CACHE --image PATH --symbol SYMBOL --dyld DYLD` | Extract one cache image, bind cache/image identities plus exact loose-dyld all-image-info/notifier offsets and preimages, then delete extraction scratch automatically. |
 | `go run . probe supervisor --module target-dyld --module hardware-breakpoints --module structured-cleanup --contract CONTRACT --dest HEADER` | Generate the reusable target-task, dyld-notifier, cache-slide, breakpoint-transition, exception-port, and cleanup controller. |
 | `go run . service-chain profile bind NAME ...` | Bind the exact manifest, native executable, SystemOS cryptex, and trust cache once for later one-command physical runs. |
 | `go run . service-chain run NAME --program PROBE -- ARG...` | Select the normalized program, run the named physical profile, and automatically emit reduced evidence. |
@@ -252,8 +252,9 @@ go run . probe supervisor \
 ```
 
 The generated header owns `TASK_DYLD_INFO` reads, remote
-`dyld_all_image_infos` decoding, PAC stripping, cache UUID/base/slide
-validation, static-to-runtime translation, the loose-dyld notifier preimage,
+`dyld_all_image_infos` decoding, exact encoded-notification validation,
+target loose-dyld slide derivation from the returned all-image-info address,
+cache UUID/base/slide validation, static-to-runtime translation, the loose-dyld notifier preimage,
 temporary-notifier to final-breakpoint replacement, prior exception-port
 snapshot/restore, thread debug-state cleanup, task resumption, port release,
 and one-line `POC_TARGET_CONTROL` JSON events. Any UUID or 16-byte instruction
