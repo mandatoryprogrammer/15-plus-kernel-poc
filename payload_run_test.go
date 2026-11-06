@@ -80,6 +80,29 @@ func TestPayloadExecutionSerialCaptureIsExplicitAndBindsIdentity(t *testing.T) {
 	}
 }
 
+func TestPayloadExecutionSerialDrainTrackerRequiresQuietAfterLastGrowth(t *testing.T) {
+	start := time.Unix(100, 0)
+	tracker := newPayloadExecutionSerialDrainTracker(start, 100)
+	quiet := 500 * time.Millisecond
+	if tracker.observe(start.Add(499*time.Millisecond), 100, quiet) {
+		t.Fatal("initial short quiet interval completed the drain")
+	}
+	if tracker.observe(start.Add(500*time.Millisecond), 120, quiet) {
+		t.Fatal("log growth completed the drain")
+	}
+	if tracker.observe(start.Add(999*time.Millisecond), 120, quiet) {
+		t.Fatal("quiet interval was measured from capture start instead of last growth")
+	}
+	if !tracker.observe(start.Add(time.Second), 120, quiet) {
+		t.Fatal("complete post-growth quiet interval did not finish the drain")
+	}
+	if payloadExecutionSerialDrainLimit > 5*time.Second ||
+		payloadExecutionSerialDrainLimit < payloadExecutionSerialDrainQuiet {
+		t.Fatalf("invalid bounded drain quiet=%s limit=%s",
+			payloadExecutionSerialDrainQuiet, payloadExecutionSerialDrainLimit)
+	}
+}
+
 func TestPayloadExecutionDeadlineClassificationHandlesSSHExitRace(t *testing.T) {
 	exitErr := errors.New("remote process exited with signal KILL")
 	timeout := 10 * time.Second

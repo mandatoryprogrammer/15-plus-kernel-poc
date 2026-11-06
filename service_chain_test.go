@@ -146,7 +146,9 @@ func TestDefaultDisplayChainSelectsReportedExecutionTimeout(t *testing.T) {
 func TestServiceChainExecutionContextPrearmsAndReportsUART(t *testing.T) {
 	evidence := &payloadExecutionSerialEvidence{
 		Path: filepath.Join(t.TempDir(), "serial.log"), Bytes: 1234,
-		SHA256: strings.Repeat("a", 64),
+		SHA256: strings.Repeat("a", 64), DrainQuiet: 500 * time.Millisecond,
+		DrainLimit: 2 * time.Second, DrainElapsed: 725 * time.Millisecond,
+		DrainQuiescent: true,
 	}
 	ctx := serviceChainExecutionContext(context.Background(), 16*time.Second,
 		evidence)
@@ -161,7 +163,11 @@ func TestServiceChainExecutionContextPrearmsAndReportsUART(t *testing.T) {
 	recordServiceChainExecutionSerial(&report, evidence)
 	if report.ExecutionSerialLog != evidence.Path ||
 		report.ExecutionSerialBytes != evidence.Bytes ||
-		report.ExecutionSerialSHA256 != evidence.SHA256 {
+		report.ExecutionSerialSHA256 != evidence.SHA256 ||
+		report.ExecutionSerialDrainQuiet != "500ms" ||
+		report.ExecutionSerialDrainLimit != "2s" ||
+		report.ExecutionSerialDrainElapsed != "725ms" ||
+		!report.ExecutionSerialDrainQuiescent {
 		t.Fatalf("service-chain UART report changed: %+v", report)
 	}
 }

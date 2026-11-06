@@ -18,6 +18,13 @@ import (
 const (
 	targetAdmissionReceipt = "/private/var/run/15-plus-kernel-poc-admission"
 	targetPayloadRunner    = "/usr/local/bin/payload-runner"
+
+	// Execution UART capture is explicit and service-chain-only.  After the
+	// target process exits, retain the reader until the UART has been quiet long
+	// enough to include launchd diagnostics already queued by that execution.
+	payloadExecutionSerialDrainQuiet = 500 * time.Millisecond
+	payloadExecutionSerialDrainLimit = 2 * time.Second
+	payloadExecutionSerialDrainPoll  = 25 * time.Millisecond
 )
 
 var errPayloadExecutionTimeout = errors.New("target payload execution deadline exceeded")
@@ -27,9 +34,68 @@ type payloadExecutionTimeoutKey struct{}
 type payloadExecutionSerialCaptureKey struct{}
 
 type payloadExecutionSerialEvidence struct {
-	Path   string
-	Bytes  int64
-	SHA256 string
+	Path           string
+	Bytes          int64
+	SHA256         string
+	DrainQuiet     time.Duration
+	DrainLimit     time.Duration
+	DrainElapsed   time.Duration
+	DrainQuiescent bool
+}
+
+type payloadExecutionSerialDrainTracker struct {
+	size      int64
+	changedAt time.Time
+}
+
+func newPayloadExecutionSerialDrainTracker(at time.Time, size int64) payloadExecutionSerialDrainTracker {
+	return payloadExecutionSerialDrainTracker{size: size, changedAt: at}
+}
+
+func (tracker *payloadExecutionSerialDrainTracker) observe(at time.Time, size int64,
+	quiet time.Duration) bool {
+	if size != tracker.size {
+		tracker.size = size
+		tracker.changedAt = at
+		return false
+	}
+	return at.Sub(tracker.changedAt) >= quiet
+}
+
+func drainPayloadExecutionSerial(ctx context.Context, capture *serialCapture,
+	quiet, limit time.Duration) (time.Duration, bool, error) {
+	if capture == nil || capture.log == nil {
+		return 0, false, errors.New("execution UART capture is unavailable")
+	}
+	if quiet <= 0 || limit < quiet || limit > 5*time.Second {
+		return 0, false, fmt.Errorf("invalid execution UART drain quiet=%s limit=%s", quiet, limit)
+	}
+	info, err := capture.log.Stat()
+	if err != nil {
+		return 0, false, err
+	}
+	started := time.Now()
+	tracker := newPayloadExecutionSerialDrainTracker(started, info.Size())
+	tick := time.NewTicker(payloadExecutionSerialDrainPoll)
+	defer tick.Stop()
+	deadline := time.NewTimer(limit)
+	defer deadline.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return time.Since(started), false, ctx.Err()
+		case <-deadline.C:
+			return time.Since(started), false, nil
+		case at := <-tick.C:
+			info, err = capture.log.Stat()
+			if err != nil {
+				return time.Since(started), false, err
+			}
+			if tracker.observe(at, info.Size(), quiet) {
+				return time.Since(started), true, nil
+			}
+		}
+	}
 }
 
 // withPayloadExecutionTimeout records a deadline for only the final target
@@ -385,7 +451,22 @@ func runPreparedPayload(ctx context.Context, c *cache, main payloadEntry, includ
 		executionErr := runSSH(executionCtx, access, false, command, os.Stdin, targetOutput, targetError)
 		executionElapsed := time.Since(executionStarted)
 		if executionSerial != nil {
+			fmt.Fprintf(c.out, "Draining target UART after bounded payload execution (quiet %s, limit %s)\n",
+				payloadExecutionSerialDrainQuiet, payloadExecutionSerialDrainLimit)
+			serialEvidence.DrainQuiet = payloadExecutionSerialDrainQuiet
+			serialEvidence.DrainLimit = payloadExecutionSerialDrainLimit
+			drainElapsed, drainQuiescent, drainErr := drainPayloadExecutionSerial(ctx,
+				executionSerial, payloadExecutionSerialDrainQuiet,
+				payloadExecutionSerialDrainLimit)
+			serialEvidence.DrainElapsed = drainElapsed
+			serialEvidence.DrainQuiescent = drainQuiescent
+			fmt.Fprintf(c.out, "Target UART drain finished after %s (quiescent=%t)\n",
+				serialEvidence.DrainElapsed.Round(time.Millisecond), serialEvidence.DrainQuiescent)
 			executionSerial.Close()
+			if drainErr != nil {
+				executionErr = errors.Join(executionErr,
+					fmt.Errorf("drain execution UART: %w", drainErr))
+			}
 			if serialErr := bindPayloadExecutionSerialEvidence(serialEvidence, executionSerial.log.Name()); serialErr != nil {
 				executionErr = errors.Join(executionErr, fmt.Errorf("bind execution UART evidence: %w", serialErr))
 			}

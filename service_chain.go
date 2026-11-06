@@ -42,30 +42,34 @@ type serviceChainManifest struct {
 }
 
 type serviceChainReport struct {
-	Schema                string    `json:"schema"`
-	StartedAt             string    `json:"started_at"`
-	FinishedAt            string    `json:"finished_at"`
-	Manifest              string    `json:"manifest"`
-	ManifestSHA256        string    `json:"manifest_sha256"`
-	Name                  string    `json:"name"`
-	Services              []string  `json:"services"`
-	LauncherMode          string    `json:"launcher_mode"`
-	Arguments             []string  `json:"arguments"`
-	Program               uiProgram `json:"program"`
-	ChainReady            bool      `json:"chain_ready"`
-	ProgramReached        bool      `json:"program_reached"`
-	ExecutionTimeout      string    `json:"execution_timeout"`
-	ExecutionTimedOut     bool      `json:"execution_timed_out"`
-	ExecutionKilled       bool      `json:"execution_killed"`
-	ExecutionSerialLog    string    `json:"execution_serial_log,omitempty"`
-	ExecutionSerialBytes  int64     `json:"execution_serial_bytes,omitempty"`
-	ExecutionSerialSHA256 string    `json:"execution_serial_sha256,omitempty"`
-	ExecutionTerminal     string    `json:"execution_terminal,omitempty"`
-	RecoveryCleanup       string    `json:"recovery_cleanup,omitempty"`
-	Markers               []string  `json:"markers,omitempty"`
-	OutputTruncated       bool      `json:"output_truncated,omitempty"`
-	Exit                  string    `json:"exit"`
-	Error                 string    `json:"error,omitempty"`
+	Schema                        string    `json:"schema"`
+	StartedAt                     string    `json:"started_at"`
+	FinishedAt                    string    `json:"finished_at"`
+	Manifest                      string    `json:"manifest"`
+	ManifestSHA256                string    `json:"manifest_sha256"`
+	Name                          string    `json:"name"`
+	Services                      []string  `json:"services"`
+	LauncherMode                  string    `json:"launcher_mode"`
+	Arguments                     []string  `json:"arguments"`
+	Program                       uiProgram `json:"program"`
+	ChainReady                    bool      `json:"chain_ready"`
+	ProgramReached                bool      `json:"program_reached"`
+	ExecutionTimeout              string    `json:"execution_timeout"`
+	ExecutionTimedOut             bool      `json:"execution_timed_out"`
+	ExecutionKilled               bool      `json:"execution_killed"`
+	ExecutionSerialLog            string    `json:"execution_serial_log,omitempty"`
+	ExecutionSerialBytes          int64     `json:"execution_serial_bytes,omitempty"`
+	ExecutionSerialSHA256         string    `json:"execution_serial_sha256,omitempty"`
+	ExecutionSerialDrainQuiet     string    `json:"execution_serial_drain_quiet,omitempty"`
+	ExecutionSerialDrainLimit     string    `json:"execution_serial_drain_limit,omitempty"`
+	ExecutionSerialDrainElapsed   string    `json:"execution_serial_drain_elapsed,omitempty"`
+	ExecutionSerialDrainQuiescent bool      `json:"execution_serial_drain_quiescent,omitempty"`
+	ExecutionTerminal             string    `json:"execution_terminal,omitempty"`
+	RecoveryCleanup               string    `json:"recovery_cleanup,omitempty"`
+	Markers                       []string  `json:"markers,omitempty"`
+	OutputTruncated               bool      `json:"output_truncated,omitempty"`
+	Exit                          string    `json:"exit"`
+	Error                         string    `json:"error,omitempty"`
 }
 
 type machServiceReport struct {
@@ -167,6 +171,12 @@ func recordServiceChainExecutionSerial(report *serviceChainReport,
 	report.ExecutionSerialLog = serial.Path
 	report.ExecutionSerialBytes = serial.Bytes
 	report.ExecutionSerialSHA256 = serial.SHA256
+	if serial.DrainLimit > 0 {
+		report.ExecutionSerialDrainQuiet = serial.DrainQuiet.String()
+		report.ExecutionSerialDrainLimit = serial.DrainLimit.String()
+		report.ExecutionSerialDrainElapsed = serial.DrainElapsed.Round(time.Millisecond).String()
+		report.ExecutionSerialDrainQuiescent = serial.DrainQuiescent
+	}
 }
 
 func validateServiceChainManifest(value serviceChainManifest) error {
